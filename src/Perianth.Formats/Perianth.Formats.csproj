@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Bounded readers, source grammars, decoded records, refusals.
+       No dependencies beyond the BCL, and no knowledge of glTF. -->
+
+  <ItemGroup>
+    <!-- The file-change guard protects a window between reading bytes and
+         re-examining the file. Proving it load-bearing means reaching inside
+         that window, which nothing outside the assembly can do. -->
+    <InternalsVisibleTo Include="Perianth.Tests" />
+  </ItemGroup>
+
+</Project>

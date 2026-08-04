@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Association, pose and visibility, materials, composition, bake, and the
+       neutral asset model. Empty until the first grammar lands; the reference
+       below exists so the dependency direction is a build error to violate. -->
+
+  <ItemGroup>
+    <ProjectReference Include="../Perianth.Formats/Perianth.Formats.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- So the numeric kernels can be checked directly against the section 7.6
+         golden vectors, rather than only through a whole assembled model. -->
+    <InternalsVisibleTo Include="Perianth.Tests" />
+  </ItemGroup>
+
+</Project>
