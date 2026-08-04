@@ -109,9 +109,15 @@ jobs:
       # fallback the website route builds cleanly and then publishes nothing,
       # which looks like success everywhere except the page people download
       # from.
+      # GH_REPO because this job never checks the repository out — it only
+      # downloads what the build made. Without a working tree gh has no git
+      # remote to infer the repo from, and fails before it reaches GitHub at
+      # all. Naming it is cheaper than a checkout done solely to be inferred
+      # from.
       - name: Attach the downloads to the release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release create "$GITHUB_REF_NAME" --generate-notes dist/* \
             || gh release upload "$GITHUB_REF_NAME" dist/* --clobber
