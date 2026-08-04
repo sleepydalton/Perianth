@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+artifacts/
+*.user
+.vs/
+.idea/
+
+# Never commit game assets. Perianth reads user-supplied files; none of them
+# belong in this repository, and several are copyrighted.
+*.mmb
+*.cameldata
+*.editordata
+*.anim
+*.mlipsyncdatabase
+*.dds
+*.wem
+*.wav
+*.glb
+*.gltf
+*.sdfdata
+*.sdftoc
+*.mshader

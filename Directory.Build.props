@@ -1,0 +1,81 @@
+<Project>
+
+  <!-- Applies to every project. Settings here are correctness controls
+       rather than preferences; each one is commented where it is set. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+
+    <!-- Absence must be distinct from fault (porting spec §16). Nullable
+         reference types make that distinction visible in signatures. -->
+    <Nullable>enable</Nullable>
+
+    <!-- A warning here is usually a correctness claim: an unused result, a
+         possible null, a lossy conversion. Do not let them accumulate. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+
+    <!-- THE determinism setting. Without it, culture decides how numbers
+         format and how strings compare: a Turkish locale lowercases "I" to a
+         dotless i, and a German locale writes 1,5 instead of 1.5 — which
+         silently corrupts JSON and changes case-insensitive archive lookups.
+         Invariant globalization removes the entire class. Use ordinal or
+         invariant comparisons explicitly as well; this is the floor, not a
+         substitute for saying what you mean. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <!-- Same input, same bytes out, on every machine. -->
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <!--
+    Publishing. None of this affects an ordinary build: every property here is
+    read only by `dotnet publish`, so `dotnet build` and the tests are
+    untouched.
+
+    The audience has a copy of the game, not a .NET SDK. So a published build
+    is self-contained and one file: nothing to install first, nothing to put
+    beside it, and no version of anything to get wrong.
+
+    Trimming is what makes that bearable — measured on this project, the CLI
+    goes from 74 MB to 13.9 MB and the window to 37 MB. It is on rather than
+    off because the whole build is checked for trim warnings and produces
+    none, which is a claim the build itself keeps honest.
+  -->
+  <PropertyGroup Condition="'$(SelfContained)' == 'true'">
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishTrimmed>true</PublishTrimmed>
+
+    <!-- Avalonia carries Skia and HarfBuzz as native libraries. Without this
+         they sit beside the executable as loose DLLs, which is three files to
+         copy and two to lose. -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+
+    <!-- Symbols are for whoever is debugging the source, and they are not
+         small: Skia and HarfBuzz alone ship 105 MB of them. The second line is
+         needed as well as the first — this property stops at the project being
+         published, so each referenced project still builds its own symbols and
+         has them copied alongside. -->
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <AllowedReferenceRelatedFileExtensions>none</AllowedReferenceRelatedFileExtensions>
+  </PropertyGroup>
+
+  <!--
+    And the third kind of symbol file: the ones inside somebody else's NuGet
+    package. Skia and HarfBuzz ship 105 MB of Windows symbols as ordinary
+    content, which no property of ours governs because they were never built
+    here. Dropping them from the publish list is the only place to catch them,
+    and it is worth catching: they were three quarters of the published size.
+  -->
+  <Target Name="DropSymbolsFromPublish"
+          AfterTargets="ComputeResolvedFilesToPublishList"
+          Condition="'$(SelfContained)' == 'true'">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(Extension)' == '.pdb'" />
+    </ItemGroup>
+  </Target>
+
+</Project>

@@ -1,0 +1,10 @@
+# Normalise line endings in the repository. Without this, a Windows checkout
+# and a Linux checkout produce different bytes for the same file, which for a
+# project whose whole premise is deterministic output is the wrong default to
+# leave to chance.
+* text=auto eol=lf
+
+# Binary fixtures, if any are ever added, must not be mangled.
+*.png binary
+*.glb binary
+*.bin binary

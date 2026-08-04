@@ -1,0 +1,31 @@
+<Project>
+
+  <!-- Central package management: a version is declared once here and referenced
+       without one everywhere else, so six projects cannot drift onto different
+       builds of the same dependency. -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageVersion Include="xunit.v3" Version="3.2.2" />
+  </ItemGroup>
+
+  <!-- The graphical front end. Avalonia is the only toolkit that gives a real
+       Windows and Linux desktop from one codebase, which is the deciding factor
+       (ARCHITECTURE_PROPOSAL §1). Inter is bundled rather than taken from the
+       system so the window looks the same on both, and is SIL OFL 1.1, which
+       permits redistribution.
+
+       Not taken: Avalonia.Diagnostics, a developer inspector still published
+       against 11.x, which would pull a mismatched version in; and
+       CommunityToolkit.Mvvm, whose change notification is twenty lines to write
+       and a fifth dependency to take. -->
+  <ItemGroup>
+    <PackageVersion Include="Avalonia" Version="12.1.1" />
+    <PackageVersion Include="Avalonia.Desktop" Version="12.1.1" />
+    <PackageVersion Include="Avalonia.Themes.Fluent" Version="12.1.1" />
+    <PackageVersion Include="Avalonia.Fonts.Inter" Version="12.1.1" />
+  </ItemGroup>
+
+</Project>

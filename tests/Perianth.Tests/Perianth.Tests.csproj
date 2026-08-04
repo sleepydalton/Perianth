@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Synthetic and asset-free. Every fixture in here is bytes written by hand
+       in the test itself; nothing reads a game file. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The golden vectors sit at the test root rather than inside this project
+         so the frozen Python reference can read the same file across the two
+         checkouts. Embedding removes any path resolution at run time. -->
+    <EmbeddedResource Include="../spec_vectors.json" LogicalName="spec_vectors.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Perianth.Formats/Perianth.Formats.csproj" />
+    <ProjectReference Include="../../src/Perianth.Core/Perianth.Core.csproj" />
+    <ProjectReference Include="../../src/Perianth.Gltf/Perianth.Gltf.csproj" />
+    <ProjectReference Include="../../src/Perianth.Pipeline/Perianth.Pipeline.csproj" />
+    <ProjectReference Include="../../src/Perianth.Cli/Perianth.Cli.csproj" />
+    <ProjectReference Include="../../src/Perianth.Gui/Perianth.Gui.csproj" />
+  </ItemGroup>
+
+</Project>

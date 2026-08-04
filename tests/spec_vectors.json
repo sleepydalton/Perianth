@@ -1,0 +1,202 @@
+{
+  "source": "porting specification section 7.6, standalone synthetic golden vectors",
+  "conventions": [
+    "A sequence of bytes is a hex string in serialized order, without a 0x prefix.",
+    "A single word is a hex string of its value, most significant nibble first, as the specification writes it.",
+    "Everything a decoder produces is a JSON number.",
+    "Approximate decimal values may be checked within float_tolerance before the specified binary32 conversion."
+  ],
+  "float_tolerance": 1e-12,
+  "groups": {
+    "dtra8": {
+      "description": "Packed translation: three signed high words plus a packed word of per-component fractions and an exponent.",
+      "cases": [
+        {
+          "bytes": "0100FEFF0300CFAB",
+          "high": [1, -2, 3],
+          "packed": "ABCF",
+          "exponent": 15,
+          "multiplier": 0.0625,
+          "translation": [1.625, -1.3125, 3.75]
+        }
+      ]
+    },
+
+    "dsca8": {
+      "description": "Packed scale, in the same shape as DTRA8.",
+      "cases": [
+        {
+          "bytes": "0100010001000F00",
+          "scale": [1, 1, 1]
+        }
+      ]
+    },
+
+    "drot3": {
+      "description": "Three-byte smallest-three rotation. Every case shares one premise: a signed high word of 0x2000 with the low five bits zero, so the stored component is 0.5 and its companion is sqrt(3)/2.",
+      "high_word": 8192,
+      "stored_component": 0.5,
+      "companion_component": 0.8660254037844386,
+      "cases": [
+        { "code": 1, "bytes": "002020", "quaternion": [0.5, 0, 0, 0.8660254037844386] },
+        { "code": 2, "bytes": "002040", "quaternion": [0, 0.5, 0, 0.8660254037844386] },
+        { "code": 3, "bytes": "002060", "quaternion": [0.5, 0.8660254037844386, 0, 0] },
+        { "code": 4, "bytes": "002080", "quaternion": [0, 0, 0.5, 0.8660254037844386] },
+        { "code": 5, "bytes": "0020A0", "quaternion": [0.5, 0, 0.8660254037844386, 0] },
+        { "code": 6, "bytes": "0020C0", "quaternion": [0, 0.5, 0.8660254037844386, 0] }
+      ],
+      "refusing_codes": [7],
+      "refusing_codes_note": "Code 7 has no golden result and must refuse."
+    },
+
+    "bvm_compact": {
+      "description": "Compact integers: six payload bits in the first byte, whose top two bits select how many little-endian bytes follow. Signed values sign-extend at the encoded width.",
+      "cases": [
+        { "bytes": "00", "unsigned": 0, "encoded_width": 6, "signed": 0 },
+        { "bytes": "3F", "unsigned": 63, "encoded_width": 6, "signed": -1 },
+        { "bytes": "20", "unsigned": 32, "encoded_width": 6, "signed": -32 },
+        { "bytes": "4001", "unsigned": 64, "encoded_width": 14, "signed": 64 },
+        { "bytes": "7FFF", "unsigned": 16383, "encoded_width": 14, "signed": -1 },
+        { "bytes": "5FFF", "unsigned": 16351, "encoded_width": 14, "signed": -33 },
+        { "bytes": "80010000", "unsigned": 64, "encoded_width": 30, "signed": 64 },
+        { "bytes": "C001000000000000", "unsigned": 64, "encoded_width": 62, "signed": 64 }
+      ]
+    },
+
+    "uv0": {
+      "description": "Unified UV0: one packed word and a scale index produce a UV pair.",
+      "cases": [
+        {
+          "packed": "C0004000",
+          "scale_index": 2,
+          "split": [16384, -16384],
+          "uv": [0.500015259254738, -0.500015259254738]
+        },
+        {
+          "packed": "80008000",
+          "scale_index": 1,
+          "uv": [-7.999755859375, -7.999755859375]
+        }
+      ]
+    },
+
+    "packed_z_cross_word": {
+      "description": "Reading a bit field that straddles two words. The low-order result bit is the first serialized bit read.",
+      "words": ["89ABCDEF", "01234567"],
+      "cases": [
+        { "bit_offset": 28, "bit_count": 8, "value": 120 },
+        { "bit_offset": 31, "bit_count": 5, "value": 15 }
+      ]
+    },
+
+    "compressed_anim_channel": {
+      "description": "Pins the selector-plus-changeStart value indexing: two animated channels, one change sample.",
+      "animated_channels": 2,
+      "change_samples": 1,
+      "chak": [2],
+      "caks": [0, 1, 1],
+      "values": ["A0", "A1", "B0"],
+      "resolutions": [
+        { "channel": 0, "samples": [0, 1], "value": "A0" },
+        { "channel": 0, "from_sample": 2, "value": "A1" },
+        { "channel": 1, "all_samples": true, "value": "B0" }
+      ]
+    },
+
+    "hierarchy_composition": {
+      "description": "A parent and one child local transform compose to a world transform.",
+      "parent": {
+        "translation": [10, 20, 30],
+        "rotation": [0, 0, 0.7071067811865476, 0.7071067811865476],
+        "scale": [2, 3, 4]
+      },
+      "child_local": {
+        "translation": [1, 2, 3],
+        "rotation": [0, 0, 0, 1],
+        "scale": [0.5, 2, 1]
+      },
+      "child_world": {
+        "translation": [4, 22, 42],
+        "rotation": [0, 0, 0.7071067811865476, 0.7071067811865476],
+        "scale": [1, 6, 4]
+      }
+    },
+
+    "visibility_sentinels": {
+      "description": "Selector sentinels decide visibility, and a clip that omits a node does not overwrite the setup value.",
+      "scenarios": [
+        {
+          "name": "hidden parent hides a locally active child",
+          "setup": { "parent": 65534, "child": 65535 },
+          "clip": null,
+          "visible": { "parent": false, "child": false }
+        },
+        {
+          "name": "a clip containing the parent with SCAI 0xFFFF reveals both",
+          "setup": { "parent": 65534, "child": 65535 },
+          "clip": { "parent": 65535 },
+          "visible": { "parent": true, "child": true }
+        },
+        {
+          "name": "a clip omitting the parent retains the hidden setup value",
+          "setup": { "parent": 65534, "child": 65535 },
+          "clip": {},
+          "visible": { "parent": false, "child": false }
+        }
+      ]
+    },
+
+    "bilinear_resize": {
+      "description": "The only operation permitted to interpolate. Single-band source in row order.",
+      "source": { "mode": "L", "width": 2, "height": 2, "rows": [[0, 64], [128, 255]] },
+      "cases": [
+        {
+          "width": 3,
+          "height": 3,
+          "rows": [[0, 32, 64], [64, 112, 160], [128, 192, 255]]
+        },
+        {
+          "width": 4,
+          "height": 4,
+          "rows": [[0, 16, 48, 64], [32, 52, 92, 112], [96, 124, 179, 207], [128, 160, 223, 255]]
+        }
+      ]
+    },
+
+    "one_texel_gutter": {
+      "description": "A byte-exact operation. Distinguishes repeating colour from clamped alpha in the same gutter, which is why the two layouts differ.",
+      "interior_rgb": [["A", "B"], ["C", "D"]],
+      "interior_alpha": [[1, 2], [3, 4]],
+      "result_rgb": [
+        ["B", "A", "B", "A"],
+        ["B", "A", "B", "A"],
+        ["D", "C", "D", "C"],
+        ["D", "C", "D", "C"]
+      ],
+      "result_alpha": [
+        [1, 1, 2, 2],
+        [1, 1, 2, 2],
+        [3, 3, 4, 4],
+        [3, 3, 4, 4]
+      ]
+    },
+
+    "gain_offset": {
+      "description": "Colour gain and offset, rounded half to even and clipped. Alpha never participates.",
+      "cases": [
+        {
+          "input_rgba": [100, 50, 200, 77],
+          "gain": [1.5, 0.5, 1],
+          "offset": [0.1, -0.1, 0.3],
+          "before_rounding": [175.5, -0.5, 276.5],
+          "output_rgba": [176, 0, 255, 77],
+          "reports_clipping": true
+        }
+      ],
+      "tie_cases": [
+        { "input": 1, "gain": 0.5, "output": 0 },
+        { "input": 3, "gain": 0.5, "output": 2 }
+      ]
+    }
+  }
+}

@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Perianth.Cli/Perianth.Cli.csproj" />
+    <Project Path="src/Perianth.Core/Perianth.Core.csproj" />
+    <Project Path="src/Perianth.Formats/Perianth.Formats.csproj" />
+    <Project Path="src/Perianth.Gltf/Perianth.Gltf.csproj" />
+    <Project Path="src/Perianth.Pipeline/Perianth.Pipeline.csproj" />
+    <Project Path="src/Perianth.Gui/Perianth.Gui.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Perianth.Tests/Perianth.Tests.csproj" />
+  </Folder>
+</Solution>
