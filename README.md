@@ -16,12 +16,14 @@ window all work. Writing the *model* format back — turning a GLB into a `.mmb`
 **The tool is experimental and in early development. Users are advised to make
 back-ups before usage.**
 
-> **This tool is not an official tool.** It is not associated with Ubisoft or
-> South Park Studios, or anyone else who has developed *South Park: The
+> **This tool is not an official tool.** It is not associated with Ubisoft, Massive Entertainment
+> or South Park Studios, or anyone else who has developed *South Park: The
 > Fractured But Whole*. All relevant copyright rights belong to their
 > respective owners, not to me. The tool was primarily made for research and
 > interoperability between file formats, and as a fun non-commercial project
 > for myself to attempt.
+> Extracting, Editing, or Modding the game or its assets or files may violate
+> its EULA - use at your own risk.
 
 ## How To Get The Tool
 
