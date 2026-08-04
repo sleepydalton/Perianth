@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The export sequence, and the rules a request must satisfy before it runs.
+
+       It sits here rather than in Core because Core cannot reference the glTF
+       writer: the dependency points the other way, and keeping it that way is
+       what stops glTF terms leaking into the model. It sits here rather than in
+       the CLI because both front ends need the same sequence, and the GUI is a
+       peer of the CLI rather than a consumer of it.
+
+       Everything below this in the stack is unchanged: Core still knows nothing
+       about glTF, and nothing here is a new abstraction over the writer - it is
+       the one caller that legitimately knows both halves. -->
+
+  <PropertyGroup>
+    <RootNamespace>Perianth.Pipeline</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Perianth.Core/Perianth.Core.csproj" />
+    <ProjectReference Include="../Perianth.Gltf/Perianth.Gltf.csproj" />
+  </ItemGroup>
+
+</Project>

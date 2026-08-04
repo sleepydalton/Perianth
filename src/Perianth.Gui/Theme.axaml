@@ -1,0 +1,82 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <!--
+    The palette, and the only place it is written down.
+
+    Measured rather than chosen. Body text needs 4.5:1 against what it sits on
+    and a control needs 3:1, so:
+
+      near-black on cream            15.45:1
+      near-black on the beige panel  12.29:1
+      cream on near-black            15.45:1
+      near-black ON the light green  10.52:1
+      cream ON the dark green         5.46:1
+
+    Two rules follow from the same measurements, and neither is a preference:
+
+    - The green is a FILL, never text and never a hairline border. Bright green
+      on cream is 1.47:1 — invisible. Dark text on a green fill is 10.52:1.
+    - Dark mode puts the near-black behind and the grey in front, matching the
+      light side's pale-background-darker-panel arrangement. The other way round
+      leaves the panels 1.81:1 from the background and the accent 1.57:1, which
+      is no accent at all.
+  -->
+
+  <ResourceDictionary.ThemeDictionaries>
+
+    <ResourceDictionary x:Key="Light">
+      <SolidColorBrush x:Key="AppBackground" Color="#FCF5E4" />
+      <SolidColorBrush x:Key="AppPanel" Color="#E4DCC8" />
+      <SolidColorBrush x:Key="AppText" Color="#1F1D1C" />
+      <SolidColorBrush x:Key="AppTextMuted" Color="#5C564C" />
+      <SolidColorBrush x:Key="AppAccent" Color="#4EE961" />
+      <!-- The green small controls use. The bright accent is a fill for dark
+           text; the check mark drawn on it would be 1.5:1. -->
+      <SolidColorBrush x:Key="AppControlAccent" Color="#2E9E3C" />
+      <SolidColorBrush x:Key="AppOnControlAccent" Color="#FCF5E4" />
+      <SolidColorBrush x:Key="AppOnAccent" Color="#1F1D1C" />
+      <SolidColorBrush x:Key="AppBorder" Color="#CFC6AE" />
+      <!-- Selection is a shade of the surface it sits on, so the row it marks
+           stays as readable as every other row: text on it is 8.91:1 here and
+           6.35:1 in the dark theme. Filling it with the accent instead, as the
+           toolkit does, would put white on green at 3.46:1. -->
+      <SolidColorBrush x:Key="AppSelection" Color="#C9BC9B" />
+
+      <!-- The toolkit's own accent, which is otherwise blue and puts a fourth
+           and fifth colour on screen in the tick boxes and the focus rings. The
+           darker green is used for both themes: the bright one is a fill for
+           dark text, and a white check glyph on it would be 1.5:1. -->
+      <Color x:Key="SystemAccentColor">#2E9E3C</Color>
+      <Color x:Key="SystemAccentColorLight1">#3FBF50</Color>
+      <Color x:Key="SystemAccentColorLight2">#4EE961</Color>
+      <Color x:Key="SystemAccentColorLight3">#7DEE8B</Color>
+      <Color x:Key="SystemAccentColorDark1">#247D2F</Color>
+      <Color x:Key="SystemAccentColorDark2">#1B5E23</Color>
+      <Color x:Key="SystemAccentColorDark3">#123F18</Color>
+    </ResourceDictionary>
+
+    <ResourceDictionary x:Key="Dark">
+      <SolidColorBrush x:Key="AppBackground" Color="#1F1D1C" />
+      <SolidColorBrush x:Key="AppPanel" Color="#474747" />
+      <SolidColorBrush x:Key="AppText" Color="#FCF5E4" />
+      <SolidColorBrush x:Key="AppTextMuted" Color="#BDB6A6" />
+      <SolidColorBrush x:Key="AppAccent" Color="#2E9E3C" />
+      <SolidColorBrush x:Key="AppControlAccent" Color="#2E9E3C" />
+      <SolidColorBrush x:Key="AppOnControlAccent" Color="#FCF5E4" />
+      <SolidColorBrush x:Key="AppOnAccent" Color="#FCF5E4" />
+      <SolidColorBrush x:Key="AppBorder" Color="#5A5A5A" />
+      <SolidColorBrush x:Key="AppSelection" Color="#5A5A5A" />
+
+      <Color x:Key="SystemAccentColor">#2E9E3C</Color>
+      <Color x:Key="SystemAccentColorLight1">#3FBF50</Color>
+      <Color x:Key="SystemAccentColorLight2">#4EE961</Color>
+      <Color x:Key="SystemAccentColorLight3">#7DEE8B</Color>
+      <Color x:Key="SystemAccentColorDark1">#247D2F</Color>
+      <Color x:Key="SystemAccentColorDark2">#1B5E23</Color>
+      <Color x:Key="SystemAccentColorDark3">#123F18</Color>
+    </ResourceDictionary>
+
+  </ResourceDictionary.ThemeDictionaries>
+
+</ResourceDictionary>

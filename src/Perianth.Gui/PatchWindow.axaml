@@ -1,0 +1,160 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:Perianth.Gui"
+        x:Class="Perianth.Gui.PatchWindow"
+        x:DataType="vm:PatchViewModel"
+        Title="Patches"
+        Width="760" Height="640"
+        MinWidth="520" MinHeight="380"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource AppBackground}">
+
+  <DockPanel Margin="16">
+
+    <TextBlock DockPanel.Dock="Top" Text="Patches"
+               FontSize="15" FontWeight="SemiBold"
+               Foreground="{DynamicResource AppText}" />
+
+    <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" FontSize="12" Margin="0,6,0,12"
+               Foreground="{DynamicResource AppTextMuted}"
+               Text="A patch holds only what its author changed, so sharing one never hands anybody the game's own files. Applying one uses the original from your own copy." />
+
+    <!-- Two halves of one subject, side by side rather than in tabs, because
+         the pair is the explanation: you make one to give away, and apply one
+         you were given. -->
+    <Grid DockPanel.Dock="Top" ColumnDefinitions="*,10,*">
+      <Button Content="Make patches from a mod folder…" Command="{Binding MakeCommand}"
+              HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+              Background="{DynamicResource AppAccent}"
+              Foreground="{DynamicResource AppOnAccent}"
+              BorderThickness="0" Padding="10,7" FontWeight="SemiBold"
+              ToolTip.Tip="Compares every file in a mod folder against the game's own and writes a patch for each one that differs." />
+
+      <Button Grid.Column="2" Content="Open a folder of patches…" Command="{Binding OpenCommand}"
+              HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+              Background="{DynamicResource AppAccent}"
+              Foreground="{DynamicResource AppOnAccent}"
+              BorderThickness="0" Padding="10,7" FontWeight="SemiBold"
+              ToolTip.Tip="Finds every patch in the folder and below it, so a whole shared set is one choice." />
+    </Grid>
+
+    <Button DockPanel.Dock="Top" Content="…or choose individual patch files"
+            Command="{Binding OpenFilesCommand}"
+            HorizontalAlignment="Right" Background="Transparent" BorderThickness="0"
+            FontSize="11" Padding="4,2" Margin="0,4,0,0"
+            Foreground="{DynamicResource AppTextMuted}" />
+
+    <TextBlock DockPanel.Dock="Top" Classes="paneNote" Text="{Binding MakeStatus}" Margin="0,10,0,0" />
+
+    <Border DockPanel.Dock="Top" IsVisible="{Binding HasSkipped}" Margin="0,8,0,0"
+            MaxHeight="160"
+            Background="{DynamicResource AppBackground}"
+            BorderBrush="{DynamicResource AppBorder}" BorderThickness="1"
+            CornerRadius="4" Padding="10">
+      <DockPanel>
+        <TextBlock DockPanel.Dock="Top" Text="No patch made for these" FontSize="11"
+                   FontWeight="SemiBold" Margin="0,0,0,6"
+                   Foreground="{DynamicResource AppText}" />
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+          <ItemsControl ItemsSource="{Binding Skipped}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:PatchRow">
+                <StackPanel Spacing="1" Margin="0,0,0,6">
+                  <TextBlock Text="{Binding VirtualPath}" FontFamily="monospace" FontSize="10"
+                             TextWrapping="Wrap" Foreground="{DynamicResource AppText}" />
+                  <TextBlock Text="{Binding Detail}" FontSize="10" TextWrapping="Wrap"
+                             Foreground="{DynamicResource AppTextMuted}" />
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </DockPanel>
+    </Border>
+
+    <Border DockPanel.Dock="Top" IsVisible="{Binding HasMade}" Margin="0,10,0,0"
+            MaxHeight="160"
+            Background="{DynamicResource AppPanel}"
+            BorderBrush="{DynamicResource AppBorder}" BorderThickness="1"
+            CornerRadius="4" Padding="10">
+      <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <ItemsControl ItemsSource="{Binding Made}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:PatchRow">
+              <StackPanel Spacing="1" Margin="0,0,0,6">
+                <TextBlock Text="{Binding Name}" FontSize="11" FontWeight="SemiBold"
+                           Foreground="{DynamicResource AppText}" />
+                <TextBlock Text="{Binding Detail}" FontSize="10" TextWrapping="Wrap"
+                           Foreground="{DynamicResource AppTextMuted}" />
+              </StackPanel>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+    </Border>
+
+    <TextBlock DockPanel.Dock="Bottom" Classes="paneNote" Text="{Binding Status}" Margin="0,10,0,0" />
+
+    <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,12,0,0"
+                IsVisible="{Binding HasRows}">
+      <Grid ColumnDefinitions="*,6,*">
+        <TextBox PlaceholderText="Mod name" Text="{Binding ModName}" FontSize="12" />
+        <TextBox Grid.Column="2" PlaceholderText="Author" Text="{Binding ModAuthor}" FontSize="12" />
+      </Grid>
+
+      <Grid ColumnDefinitions="*,6,2*">
+        <TextBox PlaceholderText="Version" Text="{Binding ModVersion}" FontSize="12"
+                 ToolTip.Tip="Free text — a shipped mod declares &quot;25 WIP&quot;." />
+        <TextBox Grid.Column="2" PlaceholderText="Description"
+                 Text="{Binding ModDescription}" FontSize="12" />
+      </Grid>
+
+      <CheckBox Content="preloadCustomAssets"
+                IsChecked="{Binding PreloadCustomAssets}"
+                ToolTip.Tip="The loader's wider asset support. Leave it off if the mod already works without it, as it may cause crashes." />
+
+      <Grid ColumnDefinitions="*,6,Auto">
+        <Button Content="Write mod…" Command="{Binding WriteModCommand}"
+                HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+        <Button Grid.Column="2" Content="Clear" Command="{Binding ClearCommand}" />
+      </Grid>
+    </StackPanel>
+
+    <ScrollViewer Margin="0,12,0,0" MinHeight="90"
+                  VerticalScrollBarVisibility="Auto">
+      <ItemsControl ItemsSource="{Binding Rows}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:PatchRow">
+            <Border Margin="0,0,0,8" Padding="10" CornerRadius="4"
+                    Background="{DynamicResource AppPanel}"
+                    BorderBrush="{DynamicResource AppBorder}" BorderThickness="1">
+              <StackPanel Spacing="3">
+                <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="SemiBold"
+                           Foreground="{DynamicResource AppText}" />
+                <TextBlock Text="{Binding VirtualPath}" FontFamily="monospace" FontSize="10"
+                           TextWrapping="Wrap"
+                           IsVisible="{Binding VirtualPath, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                           Foreground="{DynamicResource AppTextMuted}" />
+                <!-- Why a patch cannot be used is worth as much as the fact
+                     that it can: the commonest reason is the wrong copy of the
+                     game, and that is actionable. -->
+                <TextBlock Text="{Binding Detail}" FontSize="11" TextWrapping="Wrap"
+                           Foreground="{DynamicResource AppTextMuted}" />
+              </StackPanel>
+            </Border>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </ScrollViewer>
+
+  </DockPanel>
+
+  <Window.Styles>
+    <Style Selector="TextBlock.paneNote">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextMuted}" />
+    </Style>
+  </Window.Styles>
+
+</Window>

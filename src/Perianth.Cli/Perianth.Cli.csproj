@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Argument grammar, text and JSON reporting, exit codes. One entry point:
+       adding a verb is a product decision, adding a class per experiment is the
+       failure this project exists to avoid. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>perianth</AssemblyName>
+    <RootNamespace>Perianth.Cli</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Perianth.Core/Perianth.Core.csproj" />
+    <ProjectReference Include="../Perianth.Pipeline/Perianth.Pipeline.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Exit codes and printed output are the contract; testing them through a
+         spawned process would be slower and prove less. -->
+    <InternalsVisibleTo Include="Perianth.Tests" />
+  </ItemGroup>
+
+</Project>

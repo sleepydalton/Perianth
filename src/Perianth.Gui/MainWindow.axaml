@@ -1,0 +1,716 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:Perianth.Gui"
+        xmlns:audio="clr-namespace:Perianth.Core.Audio;assembly=Perianth.Core"
+        x:Class="Perianth.Gui.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Title="Perianth"
+        Width="1200" Height="760"
+        MinWidth="820" MinHeight="520"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource AppBackground}">
+
+  <DockPanel>
+
+    <!-- Title bar strip: what the window is, and the one control that exists
+         so far. -->
+    <Border DockPanel.Dock="Top"
+            Background="{DynamicResource AppPanel}"
+            BorderBrush="{DynamicResource AppBorder}"
+            BorderThickness="0,0,0,1"
+            Padding="16,10">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+          <TextBlock Text="Perianth"
+                     FontSize="16" FontWeight="SemiBold"
+                     Foreground="{DynamicResource AppText}" />
+          <!-- "Unofficial" belongs here rather than only in the README: this
+               strip is what appears in a screenshot. And not "exporter" any
+               more — it edits textures, writes mods and makes patches. -->
+          <TextBlock Text="An unofficial asset tool for South Park: The Fractured But Whole"
+                     FontSize="13" VerticalAlignment="Center"
+                     Foreground="{DynamicResource AppTextMuted}" />
+        </StackPanel>
+
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+        <Button Content="Patches…"
+                Click="OpenPatchWindow"
+                Background="Transparent"
+                Foreground="{DynamicResource AppText}"
+                BorderBrush="{DynamicResource AppBorder}"
+                Padding="14,6"
+                ToolTip.Tip="Make patches from a mod folder to share, or apply patches somebody sent you." />
+
+        <Button Content="{Binding ThemeButtonText}"
+                Command="{Binding ToggleThemeCommand}"
+                Background="{DynamicResource AppAccent}"
+                Foreground="{DynamicResource AppOnAccent}"
+                BorderThickness="0"
+                Padding="14,6"
+                FontWeight="SemiBold" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- The three panes. Empty for now: this step is the window, the palette
+         and the font, so that what arrives in them next is judged against a
+         frame already known to be right. -->
+    <Grid ColumnDefinitions="1.1*,4,1.4*,4,1.2*" Margin="12">
+
+      <Border Grid.Column="0" Classes="pane">
+        <DockPanel DataContext="{Binding Browse}">
+
+          <TextBlock DockPanel.Dock="Top" Classes="paneTitle" Text="Browse" Margin="0,0,0,10" />
+
+          <Button DockPanel.Dock="Top"
+                  Content="{Binding FolderLabel}"
+                  Click="ChooseArchiveFolder"
+                  HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left"
+                  Background="{DynamicResource AppAccent}"
+                  Foreground="{DynamicResource AppOnAccent}"
+                  BorderThickness="0" Padding="10,7" FontWeight="SemiBold" />
+
+          <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="0,10,0,0"
+                IsEnabled="{Binding HasArchives}">
+            <TextBox Text="{Binding Search}"
+                     PlaceholderText="Search, e.g. cartman"
+                     Background="{DynamicResource AppBackground}"
+                     Foreground="{DynamicResource AppText}"
+                     BorderBrush="{DynamicResource AppBorder}" />
+            <Button Grid.Column="1" Content="Clear" Margin="6,0,0,0"
+                    Command="{Binding ClearSearchCommand}"
+                    Background="Transparent"
+                    Foreground="{DynamicResource AppText}"
+                    BorderBrush="{DynamicResource AppBorder}" Padding="10,6" />
+          </Grid>
+
+          <TextBlock DockPanel.Dock="Bottom" Classes="paneNote" Text="{Binding Status}" Margin="0,8,0,0" />
+
+          <ListBox ItemsSource="{Binding Results}"
+                   SelectedItem="{Binding Selected}"
+                   Margin="0,10,0,0"
+                   Background="{DynamicResource AppBackground}"
+                   BorderBrush="{DynamicResource AppBorder}"
+                   BorderThickness="1"
+                   ScrollViewer.HorizontalScrollBarVisibility="Auto">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <!-- The system monospace: these are paths, and they are read by
+                     comparing one against another. -->
+                <TextBlock Text="{Binding}" FontFamily="monospace" FontSize="12"
+                           Foreground="{DynamicResource AppText}" />
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+
+        </DockPanel>
+      </Border>
+
+      <GridSplitter Grid.Column="1" Background="Transparent" />
+
+      <Border Grid.Column="2" Classes="pane">
+        <DockPanel>
+
+          <TextBlock DockPanel.Dock="Top" Classes="paneTitle" Text="Asset" Margin="0,0,0,10" />
+
+          <TextBlock DockPanel.Dock="Top" Text="{Binding Asset.Title}"
+                     FontFamily="monospace" FontSize="11" TextWrapping="Wrap"
+                     Foreground="{DynamicResource AppTextMuted}" Margin="0,0,0,8" />
+
+          <!-- Two views of the same model: what it is made of, and what it is
+               painted with. The textures are a tab rather than a section
+               because decoding eighty of them is not something to do to
+               somebody who only wanted the file list. -->
+          <TabControl SelectionChanged="AssetTabChanged">
+
+            <TabItem Header="Files">
+              <DockPanel DataContext="{Binding Asset}" Margin="0,8,0,0">
+
+          <TextBlock DockPanel.Dock="Bottom" Classes="paneNote" Text="{Binding Status}" Margin="0,8,0,0" />
+
+          <ScrollViewer>
+            <StackPanel Spacing="14">
+
+              <ItemsControl ItemsSource="{Binding Rows}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:AssetRow">
+                    <Grid ColumnDefinitions="86,*" Margin="0,0,0,7">
+                      <TextBlock Text="{Binding Label}" FontSize="12" FontWeight="SemiBold"
+                                 Foreground="{DynamicResource AppText}" />
+                      <StackPanel Grid.Column="1" Spacing="1">
+                        <TextBlock Text="{Binding Path}" FontFamily="monospace" FontSize="11"
+                                   TextWrapping="Wrap" Foreground="{DynamicResource AppText}" />
+                        <!-- Which rule matched, when it was not the direct one.
+                             A variant posed through its family is a different
+                             claim from a model posed by its own setup. -->
+                        <TextBlock Text="{Binding Note}" FontSize="11" FontStyle="Italic"
+                                   IsVisible="{Binding Note, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                   Foreground="{DynamicResource AppTextMuted}" />
+                      </StackPanel>
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+
+              <Border IsVisible="{Binding HasUnresolved}"
+                      Background="{DynamicResource AppBackground}"
+                      BorderBrush="{DynamicResource AppBorder}"
+                      BorderThickness="1" CornerRadius="4" Padding="10">
+                <StackPanel Spacing="6">
+                  <TextBlock Text="Not accounted for" FontSize="12" FontWeight="SemiBold"
+                             Foreground="{DynamicResource AppText}" />
+                  <ItemsControl ItemsSource="{Binding Unresolved}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <TextBlock Text="{Binding}" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,4"
+                                   Foreground="{DynamicResource AppTextMuted}" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+
+            </StackPanel>
+          </ScrollViewer>
+
+              </DockPanel>
+            </TabItem>
+
+            <TabItem Header="Textures">
+              <DockPanel DataContext="{Binding Texture}" Margin="0,8,0,0">
+
+                <CheckBox DockPanel.Dock="Top" Content="Every channel"
+                          IsChecked="{Binding ShowEveryChannel}"
+                          ToolTip.Tip="Adds the alpha masks and the constant maps bound to NormalMap and SpecularColor."
+                          Margin="0,0,0,8" />
+
+                <!-- Said here because the grid invites the inference. A sheet
+                     named 0012 sits next to an export pane offering mouth 12,
+                     and the two numbers are not known to be the same one. -->
+                <TextBlock DockPanel.Dock="Top" Classes="paneNote" FontSize="11"
+                           Text="The number in a mouth or eye texture's name is the library sheet's own. It is not the facial state number in the export pane, and nothing measured links the two."
+                           Margin="0,0,0,10" />
+
+                <TextBlock DockPanel.Dock="Bottom" Classes="paneNote" Text="{Binding Status}" Margin="0,8,0,0" />
+
+                <!-- Editing a texture. Nothing is written until "Write mod":
+                     someone changing a character usually changes several
+                     things, and those should become one mod to install rather
+                     than one apiece. -->
+                <Border DockPanel.Dock="Bottom" Margin="0,10,0,0" Padding="10"
+                        Background="{DynamicResource AppBackground}"
+                        BorderBrush="{DynamicResource AppBorder}"
+                        BorderThickness="1" CornerRadius="4">
+                  <StackPanel Spacing="7">
+
+                    <TextBlock Text="{Binding SelectedName}" FontFamily="monospace" FontSize="11"
+                               TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource AppText}" />
+
+                    <!-- The distinction that decides which of these three a
+                         user wants, and which nothing in the window used to
+                         say: the shipped art is a shared library, so changing
+                         a texture changes it for every model binding it. -->
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="1 · Change the texture itself. Every model painted with it changes, not only this one." />
+
+                    <Grid ColumnDefinitions="*,6,*">
+                      <Button Content="Save as PNG" Command="{Binding SaveAsPngCommand}"
+                              HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                              ToolTip.Tip="Writes this texture out to edit in any image editor." />
+                      <Button Grid.Column="2" Content="Replace image…"
+                              Command="{Binding ReplaceCommand}"
+                              HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                              ToolTip.Tip="Takes a PNG or an edited DDS back in at this texture's own path — which changes it for every other model that uses it too." />
+                    </Grid>
+
+                    <TextBlock Classes="paneNote" FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap"
+                               Text="2 · Change what this model is painted with. Other models keep the texture as it is." />
+
+                    <!-- The label is the whole explanation, because the only
+                         difference between this and "Replace image" is who else
+                         is affected, and that is not visible in the result. -->
+                    <Button Content="{Binding AddButtonText}"
+                            Command="{Binding AddCommand}"
+                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                            ToolTip.Tip="Takes a PNG or a DDS, saves it as a texture of its own, and points this model at that copy instead. The original texture is untouched, so every other model still looks the same." />
+
+                    <!-- Aiming at one part. Nothing in the material sheet says
+                         which part is the hat: the names are the artist's, and
+                         name the paper or marker rather than the anatomy. So
+                         the number comes from looking at the model. -->
+                    <Grid ColumnDefinitions="Auto,6,*">
+                      <TextBlock Text="Parts" VerticalAlignment="Center" FontSize="11"
+                                 Foreground="{DynamicResource AppTextMuted}" />
+                      <TextBox Grid.Column="2" PlaceholderText="every part — or e.g. 47, 51"
+                               Text="{Binding Parts}"
+                               FontFamily="monospace" FontSize="11"
+                               ToolTip.Tip="Leave empty to change every part painted with this texture. To pick one, export the model to GLB and open it in Blender: each mesh is named mode3-record-N, and that N is the number to type here." />
+                    </Grid>
+
+                    <TextBlock Text="{Binding PartsNote}" Classes="paneNote" FontSize="10"
+                               TextWrapping="Wrap" />
+
+                    <!-- Naming parts is an alternative to choosing a texture,
+                         not an extra step on top of it: the part already says
+                         which binding is meant. -->
+                    <TextBlock Classes="paneNote" FontSize="10" TextWrapping="Wrap"
+                               Text="Name parts here and you need not choose a texture at all — whatever they are painted with is replaced." />
+
+                    <!-- Where the numbers come from, said in the pane and not
+                         only in a tooltip: nothing in the material sheet names
+                         a part, so this is not guessable. -->
+                    <TextBlock Classes="paneNote" FontSize="10" TextWrapping="Wrap"
+                               Text="Part numbers come from an exported GLB: in Blender each mesh is named mode3-record-N, and N is the number." />
+
+                    <!-- Which of the two edits will do anything to this
+                         texture's parts. Half a model carries its colour in
+                         the image and half in a tint, so the wrong one is not
+                         an error — it silently changes nothing. -->
+                    <TextBlock Text="{Binding SelectedAdvice}" Classes="paneNote" FontSize="11"
+                               TextWrapping="Wrap"
+                               IsVisible="{Binding SelectedAdvice, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+                    <Grid ColumnDefinitions="*,6,Auto">
+                      <TextBox PlaceholderText="or a path — left empty, one is proposed"
+                               Text="{Binding RepointTo}"
+                               FontFamily="monospace" FontSize="11"
+                               ToolTip.Tip="Where a new image goes, and what Repoint binds. Leave it empty and adding an image proposes a path, then shows you the one it used." />
+                      <Button Grid.Column="2" Content="Use instead" Command="{Binding RepointCommand}"
+                              ToolTip.Tip="Points this model at a texture that already exists, rather than at one of your own." />
+                    </Grid>
+
+                    <Grid ColumnDefinitions="*,6,Auto">
+                      <TextBox PlaceholderText="0.1,0.2,0.8" Text="{Binding RetintTo}"
+                               FontFamily="monospace" FontSize="11"
+                               ToolTip.Tip="Three decimals. Eight bits per channel cannot express the values the shipped files hold." />
+                      <Button Grid.Column="2" Content="Recolour" Command="{Binding RetintCommand}"
+                              ToolTip.Tip="Colours the parts painted with this texture, for the ones drawn on a blank sheet." />
+                    </Grid>
+
+                    <StackPanel IsVisible="{Binding HasReplacements}" Spacing="7">
+                      <ItemsControl ItemsSource="{Binding Replacing}">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate>
+                            <TextBlock Text="{Binding}" FontFamily="monospace" FontSize="10"
+                                       TextTrimming="CharacterEllipsis"
+                                       Foreground="{DynamicResource AppTextMuted}" />
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+
+                      <Grid ColumnDefinitions="*,6,*">
+                        <TextBox PlaceholderText="Mod name" Text="{Binding ModName}" FontSize="12" />
+                        <TextBox Grid.Column="2" PlaceholderText="Author" Text="{Binding ModAuthor}" FontSize="12" />
+                      </Grid>
+
+                      <Grid ColumnDefinitions="*,6,*">
+                        <TextBox PlaceholderText="Version" Text="{Binding ModVersion}" FontSize="12"
+                                 ToolTip.Tip="Free text — a shipped mod declares &quot;25 WIP&quot;." />
+                        <TextBox Grid.Column="2" PlaceholderText="Description"
+                                 Text="{Binding ModDescription}" FontSize="12" />
+                      </Grid>
+
+                      <CheckBox Content="preloadCustomAssets"
+                                IsChecked="{Binding PreloadCustomAssets}"
+                                ToolTip.Tip="The loader's wider asset support. Leave it off if the mod already works without it, as it may cause crashes." />
+
+                      <Grid ColumnDefinitions="*,6,Auto">
+                        <Button Content="Write mod…" Command="{Binding WriteModCommand}"
+                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                                ToolTip.Tip="Writes the finished files, ready to play." />
+                        <Button Grid.Column="2" Content="Discard" Command="{Binding ForgetCommand}" />
+                      </Grid>
+
+                      <!-- The sharable form, and the reason it is offered
+                           beside the mod rather than buried: a mod folder
+                           holds the game's own bytes and a patch does not. -->
+                      <Button Content="Save as patches…" Command="{Binding SavePatchesCommand}"
+                              HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                              ToolTip.Tip="Writes only your changes, so you can share the mod without sharing the game's files." />
+                    </StackPanel>
+
+                  </StackPanel>
+                </Border>
+
+                <Button DockPanel.Dock="Bottom" Content="{Binding ShowAllText}"
+                        Command="{Binding ShowAllCommand}" IsVisible="{Binding HasMore}"
+                        HorizontalAlignment="Stretch" Margin="0,8,0,0" />
+
+                <!-- Toggle so clicking the selected texture again lets go of
+                     it. Without it there is no way back to nothing selected
+                     once anything has been. -->
+                <ListBox ItemsSource="{Binding Thumbnails}"
+                         SelectedItem="{Binding Selected}"
+                         SelectionMode="Single,Toggle"
+                         Background="Transparent" BorderThickness="0" Padding="0">
+                    <ListBox.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <WrapPanel />
+                      </ItemsPanelTemplate>
+                    </ListBox.ItemsPanel>
+                    <ListBox.ItemTemplate>
+                      <DataTemplate x:DataType="vm:TextureThumbnail">
+                        <StackPanel Width="118" Margin="0,0,8,10" Spacing="3"
+                                    ToolTip.Tip="{Binding Path}">
+
+                          <!-- Drawn over a checkerboard, because a great many
+                               of these carry their picture in alpha over black
+                               and would otherwise all look like one square. -->
+                          <Border Width="118" Height="118" CornerRadius="3"
+                                  BorderBrush="{DynamicResource AppBorder}" BorderThickness="1">
+                            <Border.Background>
+                              <DrawingBrush TileMode="Tile" Stretch="None"
+                                            SourceRect="0,0,16,16" DestinationRect="0,0,16,16">
+                                <DrawingBrush.Drawing>
+                                  <DrawingGroup>
+                                    <GeometryDrawing Brush="#FFFFFFFF" Geometry="M0,0 L16,0 16,16 0,16 Z" />
+                                    <GeometryDrawing Brush="#FFCCCCCC" Geometry="M0,0 L8,0 8,8 0,8 Z M8,8 L16,8 16,16 8,16 Z" />
+                                  </DrawingGroup>
+                                </DrawingBrush.Drawing>
+                              </DrawingBrush>
+                            </Border.Background>
+                            <Panel>
+                              <Image Source="{Binding Image}" Stretch="Uniform" Margin="2" />
+                              <TextBlock Text="{Binding Note}" FontSize="10" TextWrapping="Wrap"
+                                         Margin="6" VerticalAlignment="Center"
+                                         IsVisible="{Binding Note, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                         Foreground="#FF333333" />
+                            </Panel>
+                          </Border>
+
+                          <TextBlock Text="{Binding Name}" FontFamily="monospace" FontSize="10"
+                                     TextTrimming="CharacterEllipsis"
+                                     Foreground="{DynamicResource AppText}" />
+                          <TextBlock Text="{Binding Detail}" FontSize="10"
+                                     TextTrimming="CharacterEllipsis"
+                                     Foreground="{DynamicResource AppTextMuted}" />
+
+                        </StackPanel>
+                      </DataTemplate>
+                    </ListBox.ItemTemplate>
+                  </ListBox>
+
+              </DockPanel>
+            </TabItem>
+
+          </TabControl>
+
+        </DockPanel>
+      </Border>
+
+      <GridSplitter Grid.Column="3" Background="Transparent" />
+
+      <Border Grid.Column="4" Classes="pane">
+        <DockPanel DataContext="{Binding Export}">
+
+          <TextBlock DockPanel.Dock="Top" Classes="paneTitle" Text="Export" Margin="0,0,0,10" />
+
+          <Button DockPanel.Dock="Top"
+                  Content="{Binding WorkingLabel}"
+                  Click="ChooseWorkingFolder"
+                  HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                  Background="{DynamicResource AppAccent}"
+                  Foreground="{DynamicResource AppOnAccent}"
+                  BorderThickness="0" Padding="10,7" FontWeight="SemiBold" />
+
+          <StackPanel DockPanel.Dock="Top" Margin="0,12,0,0" Spacing="8" IsEnabled="{Binding Idle}">
+
+            <CheckBox IsChecked="{Binding Pose}" Content="{Binding PoseLabel}" />
+
+            <!-- Said here rather than only in the diagnostics afterwards: an
+                 unposed export looks like a fault in the tool, and it is the
+                 absence of a choice. -->
+            <TextBlock Text="{Binding PoseNote}" Classes="paneNote" FontSize="10" TextWrapping="Wrap"
+                       IsVisible="{Binding PoseNote, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            <CheckBox IsChecked="{Binding Materials}" Content="Materials and textures" />
+
+            <!-- The point of this one: a GLB costs nothing and a mod loader run
+                 does not, so an edit should be looked at here first. -->
+            <CheckBox IsChecked="{Binding IncludeStagedChanges}"
+                      Content="Include my texture changes"
+                      ToolTip.Tip="Exports with your own textures and materials on top of the game's files, so you can see a change in Blender before loading it in the game." />
+
+            <Button Content="{Binding ModFolderLabel}" Click="ChooseModFolder"
+                    IsEnabled="{Binding IncludeStagedChanges}"
+                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                    ToolTip.Tip="A mod folder written earlier. Writing a mod clears the Textures tab, so this is how you look at one afterwards." />
+
+            <!-- Said rather than left to be inferred: the checkbox silently
+                 applying nothing is what made this look broken. -->
+            <TextBlock Text="{Binding ChangesNote}" Classes="paneNote" FontSize="10" TextWrapping="Wrap"
+                       IsVisible="{Binding ChangesNote, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+            <StackPanel Spacing="4">
+              <TextBlock Text="Animation" Classes="optionLabel" />
+              <ComboBox ItemsSource="{Binding Clips}" SelectedItem="{Binding Clip}"
+                        HorizontalAlignment="Stretch" MaxDropDownHeight="320">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:ClipChoice">
+                    <TextBlock Text="{Binding Label}" FontSize="12" />
+                  </DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+            </StackPanel>
+
+            <StackPanel Spacing="6" IsVisible="{Binding HasClip}">
+              <CheckBox IsChecked="{Binding Animate}" Content="Play the whole clip" />
+              <StackPanel Spacing="3" IsVisible="{Binding Animate}">
+                <TextBlock Text="Blink at (seconds, comma separated)" Classes="optionLabel" />
+                <TextBox Text="{Binding Blinks}" PlaceholderText="e.g. 0.1, 0.25"
+                         Background="{DynamicResource AppBackground}"
+                         Foreground="{DynamicResource AppText}"
+                         BorderBrush="{DynamicResource AppBorder}" FontSize="12" />
+              </StackPanel>
+            </StackPanel>
+
+            <StackPanel Spacing="4">
+              <TextBlock Text="Facial state" Classes="optionLabel" />
+              <ItemsControl ItemsSource="{Binding Facial}">
+                <ItemsControl.ItemsPanel>
+                  <ItemsPanelTemplate>
+                    <UniformGrid Columns="2" />
+                  </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:FacialChoice">
+                    <!-- An atlas this model does not have is shown disabled
+                         rather than hidden, so its absence is visible. -->
+                    <StackPanel Margin="0,0,6,6" Spacing="2" IsEnabled="{Binding Available}">
+                      <TextBlock Text="{Binding Label}" FontSize="11"
+                                 Foreground="{DynamicResource AppTextMuted}" />
+                      <Grid ColumnDefinitions="*,Auto">
+                        <ComboBox ItemsSource="{Binding Options}"
+                                  SelectedIndex="{Binding Index}"
+                                  HorizontalAlignment="Stretch" FontSize="12"
+                                  MaxDropDownHeight="320" />
+                        <!-- Nothing in the data names these states, so the only
+                             way to learn them is to look at every one. -->
+                        <!-- A verb, not a dropdown entry: it starts exporting on
+                             click, and "All" read like another option to pick. -->
+                        <Button Grid.Column="1" Content="Export all" Margin="4,0,0,0"
+                                Command="{Binding SurveyCommand}"
+                                ToolTip.Tip="Exports one file per state straight away, so you can see what the numbers are. Stop cancels it."
+                                Background="Transparent"
+                                Foreground="{DynamicResource AppText}"
+                                BorderBrush="{DynamicResource AppBorder}"
+                                Padding="8,4" FontSize="11" />
+                      </Grid>
+                    </StackPanel>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <CheckBox IsChecked="{Binding MeshNeutralPupils}"
+                        Content="Mesh-neutral pupil placement" />
+            </StackPanel>
+
+            <StackPanel Spacing="6">
+              <TextBlock Text="Speech" Classes="optionLabel" />
+              <CheckBox IsChecked="{Binding Lipsync}" Content="Drive the mouth from a speech line" />
+
+              <StackPanel Spacing="6" IsVisible="{Binding Lipsync}">
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBox Text="{Binding SpeechId}" PlaceholderText="Speech ID, e.g. 1003"
+                           Background="{DynamicResource AppBackground}"
+                           Foreground="{DynamicResource AppText}"
+                           BorderBrush="{DynamicResource AppBorder}" FontSize="12" />
+                  <ComboBox Grid.Column="1" Margin="6,0,0,0" Width="150"
+                            ItemsSource="{Binding Locales}" SelectedItem="{Binding Locale}"
+                            FontSize="12" MaxDropDownHeight="320" />
+                </Grid>
+
+                <!-- Nothing names who speaks a line, but the localization
+                     packages say what every line is, keyed by the same GUID the
+                     identifier table turns into a speech ID. So it is searched
+                     by what is said. -->
+                <TextBox Text="{Binding LineSearch}" PlaceholderText="Or search what is said, e.g. screw you"
+                         Background="{DynamicResource AppBackground}"
+                         Foreground="{DynamicResource AppText}"
+                         BorderBrush="{DynamicResource AppBorder}" FontSize="12" />
+
+                <ListBox ItemsSource="{Binding Lines}" SelectedItem="{Binding ChosenLine}"
+                         MaxHeight="150"
+                         IsVisible="{Binding Lines.Count}"
+                         Background="{DynamicResource AppBackground}"
+                         BorderBrush="{DynamicResource AppBorder}" BorderThickness="1">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="audio:SpokenLine">
+                      <StackPanel>
+                        <TextBlock Text="{Binding Text}" FontSize="11.5" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource AppText}" />
+                        <TextBlock Text="{Binding SpeechId}" FontSize="10" FontFamily="monospace"
+                                   Foreground="{DynamicResource AppTextMuted}" />
+                      </StackPanel>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+
+                <Button Content="Take a line that works" Command="{Binding SampleSpeechCommand}"
+                        HorizontalAlignment="Left" Padding="10,5" FontSize="11"
+                        ToolTip.Tip="Picks a speech ID the database can play and the archives can voice"
+                        Background="Transparent" Foreground="{DynamicResource AppText}"
+                        BorderBrush="{DynamicResource AppBorder}" />
+
+                <!-- The two halves are separate because their requirements are:
+                     the mouth needs the lip-sync database, the sound needs an
+                     external decoder. Without the decoder you still get a mouth. -->
+                <CheckBox IsChecked="{Binding Audio}" IsEnabled="{Binding CanUseAudio}"
+                          Content="Also write the voice audio (WAV)" />
+
+                <Button Content="{Binding VgmstreamLabel}" Click="ChooseVgmstream"
+                        IsVisible="{Binding Audio}"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                        Background="Transparent" Foreground="{DynamicResource AppText}"
+                        BorderBrush="{DynamicResource AppBorder}" Padding="9,5" FontSize="11" />
+
+                <TextBlock Text="{Binding SpeechStatus}" FontSize="11" TextWrapping="Wrap"
+                           IsVisible="{Binding SpeechStatus, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                           Foreground="{DynamicResource AppTextMuted}" />
+              </StackPanel>
+            </StackPanel>
+
+          </StackPanel>
+
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
+            <Button Content="Extract" Command="{Binding ExtractCommand}"
+                    Background="Transparent" Foreground="{DynamicResource AppText}"
+                    BorderBrush="{DynamicResource AppBorder}" Padding="12,6" />
+            <Button Content="Export GLB" Command="{Binding ExportCommand}"
+                    Background="{DynamicResource AppAccent}"
+                    Foreground="{DynamicResource AppOnAccent}"
+                    BorderThickness="0" Padding="12,6" FontWeight="SemiBold" />
+            <Button Content="Stop" Command="{Binding CancelCommand}"
+                    IsVisible="{Binding Busy}"
+                    Background="Transparent" Foreground="{DynamicResource AppText}"
+                    BorderBrush="{DynamicResource AppBorder}" Padding="12,6" />
+          </StackPanel>
+
+          <TextBlock DockPanel.Dock="Top" Text="{Binding Progress}"
+                     IsVisible="{Binding Progress, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                     FontFamily="monospace" FontSize="11" Margin="0,10,0,0"
+                     Foreground="{DynamicResource AppTextMuted}" />
+
+          <TextBlock DockPanel.Dock="Bottom" Classes="paneNote" Text="{Binding Status}" Margin="0,10,0,0" />
+
+          <!-- A sentence each, with the rest behind it. Nothing is abbreviated
+               away: the material disclosure is the only place the engine inputs
+               the shader does not reproduce are written down, so it stays - but
+               it is not shouted at someone trying to work. -->
+          <ScrollViewer Margin="0,12,0,0">
+            <ItemsControl ItemsSource="{Binding Messages}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:Note">
+                  <Border Classes.done="{Binding IsDone}"
+                          Classes.tip="{Binding IsTip}"
+                          Classes.problem="{Binding IsProblem}"
+                          Classes.caveat="{Binding IsCaveat}"
+                          Classes="note" Margin="0,0,0,6">
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="{Binding Summary}" FontSize="11.5" TextWrapping="Wrap"
+                                 Foreground="{DynamicResource AppText}" />
+                      <ToggleButton Name="Disclose"
+                                    Theme="{StaticResource DisclosureToggle}"
+                                    IsVisible="{Binding HasDetail}"
+                                    Content="Details" />
+                      <TextBlock Text="{Binding Detail}" FontSize="11" TextWrapping="Wrap"
+                                 Margin="7,2,0,2"
+                                 IsVisible="{Binding #Disclose.IsChecked}"
+                                 Foreground="{DynamicResource AppTextMuted}" />
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+
+        </DockPanel>
+      </Border>
+
+    </Grid>
+  </DockPanel>
+
+  <Window.Styles>
+    <Style Selector="Border.pane">
+      <Setter Property="Background" Value="{DynamicResource AppPanel}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppBorder}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="Padding" Value="16" />
+    </Style>
+    <Style Selector="StackPanel.placeholder">
+      <Setter Property="Spacing" Value="8" />
+    </Style>
+    <Style Selector="TextBlock.paneTitle">
+      <Setter Property="FontSize" Value="14" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource AppText}" />
+    </Style>
+    <!-- A note is told apart by its left edge rather than by a coloured
+         background: the accent green is a fill with dark text on it, and text
+         on a tinted panel would not clear the contrast the palette guarantees. -->
+    <Style Selector="Border.note">
+      <Setter Property="Background" Value="{DynamicResource AppBackground}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppBorder}" />
+      <Setter Property="BorderThickness" Value="3,1,1,1" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Padding" Value="9,7" />
+    </Style>
+    <Style Selector="Border.note.done">
+      <Setter Property="BorderBrush" Value="{DynamicResource AppAccent}" />
+    </Style>
+    <Style Selector="Border.note.problem">
+      <Setter Property="BorderBrush" Value="#C4462F" />
+    </Style>
+
+    <!-- Selection is a shade of the panel, not the accent. Fluent fills a
+         selected row with the accent and writes white on it, which on either of
+         our greens is well under the 4.5:1 the palette holds everything else to. -->
+    <Style Selector="ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AppSelection}" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource AppText}" />
+    </Style>
+    <Style Selector="ListBoxItem:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AppSelection}" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource AppText}" />
+    </Style>
+    <Style Selector="ListBoxItem:selected:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AppSelection}" />
+      <Setter Property="TextElement.Foreground" Value="{DynamicResource AppText}" />
+    </Style>
+
+
+    <Style Selector="TextBox">
+      <Setter Property="SelectionBrush" Value="{DynamicResource AppSelection}" />
+      <Setter Property="SelectionForegroundBrush" Value="{DynamicResource AppText}" />
+    </Style>
+
+    <Style Selector="TextBlock.optionLabel">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource AppText}" />
+    </Style>
+
+    <Style Selector="TextBlock.paneNote">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextMuted}" />
+    </Style>
+
+    <!-- The tab strip only needs to be the size of the pane's own text; the
+         selected underline is already the palette's, because the accent colours
+         the toolkit derives it from are overridden in Theme.axaml. -->
+    <Style Selector="TabItem">
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="MinHeight" Value="30" />
+      <Setter Property="Padding" Value="0,0,0,4" />
+      <Setter Property="Margin" Value="0,0,16,0" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextMuted}" />
+    </Style>
+
+    <Style Selector="TabItem:selected">
+      <Setter Property="Foreground" Value="{DynamicResource AppText}" />
+    </Style>
+  </Window.Styles>
+
+</Window>

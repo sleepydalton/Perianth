@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The GLB writer: the only project that is allowed to know what glTF is.
+       Empty until there is an asset model to project. -->
+
+  <ItemGroup>
+    <ProjectReference Include="../Perianth.Core/Perianth.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The padding helper is checked directly; it decides chunk boundaries. -->
+    <InternalsVisibleTo Include="Perianth.Tests" />
+  </ItemGroup>
+
+</Project>

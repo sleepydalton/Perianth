@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A peer of the CLI, never a consumer of it: it calls the core and the
+       pipeline directly rather than shelling out and parsing text. -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>perianth-gui</AssemblyName>
+    <RootNamespace>Perianth.Gui</RootNamespace>
+
+    <!-- Bindings resolved at compile time against the view model's real type,
+         so a renamed property is a build error rather than a blank control. -->
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Perianth.Tests" />
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Desktop" />
+    <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="Avalonia.Fonts.Inter" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Perianth.Core/Perianth.Core.csproj" />
+    <ProjectReference Include="../Perianth.Pipeline/Perianth.Pipeline.csproj" />
+  </ItemGroup>
+
+</Project>
