@@ -1,14 +1,5 @@
 name: build
 
-# What this is for: nothing in this project had ever run on Windows, which is
-# the one platform its audience uses. A hosted runner settles the half of that a
-# machine can settle — that it compiles, that the tests pass, and that a
-# self-contained single file actually publishes.
-#
-# It settles none of the other half. Opening the window, loading a mod, reading
-# a GLB in Blender, clicking a file picker and rendering both themes still need
-# a person at a Windows desktop. A green run here is not that check.
-
 on:
   push:
   pull_request:
@@ -110,7 +101,17 @@ jobs:
 
       # The GitHub CLI is already on the runner. A third-party action would be
       # one more thing to trust for a step that is one command.
-      - name: Create the release
+      #
+      # Two ways a tag arrives, and the difference is invisible from here. A tag
+      # pushed on its own has no release yet, so one is created. A release
+      # published in the browser creates the tag itself, so the release already
+      # exists and `create` fails — attach the files to it instead. Without the
+      # fallback the website route builds cleanly and then publishes nothing,
+      # which looks like success everywhere except the page people download
+      # from.
+      - name: Attach the downloads to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes dist/*
+        run: |
+          gh release create "$GITHUB_REF_NAME" --generate-notes dist/* \
+            || gh release upload "$GITHUB_REF_NAME" dist/* --clobber
