@@ -7,7 +7,123 @@ name: build
 #
 # It settles none of the other half. Opening the window, loading a mod, reading
 # a GLB in Blender, clicking a file picker and rendering both themes still need
+# a person at a Windows desktop. A grname: build
+
+# What this is for: nothing in this project had ever run on Windows, which is
+# the one platform its audience uses. A hosted runner settles the half of that a
+# machine can settle — that it compiles, that the tests pass, and that a
+# self-contained single file actually publishes.
+#
+# It settles none of the other half. Opening the window, loading a mod, reading
+# a GLB in Blender, clicking a file picker and rendering both themes still need
 # a person at a Windows desktop. A green run here is not that check.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      # Both platforms report, rather than the first failure hiding the other.
+      # A Windows-only fault is the whole reason this exists, and it would be
+      # cancelled by a Linux one under the default.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: windows-latest
+            rid: win-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      # Warnings are errors, set in Directory.Build.props. On a platform nobody
+      # had compiled for that is a real claim rather than a formality: path
+      # handling and file APIs differ enough to produce new ones.
+      - name: Build
+        run: dotnet build
+
+      # Asset-free by default. The DDS, PNG, SDF and editordata suites check
+      # the readers against the game's own files, which cannot leave the
+      # author's machine, so they skip here and must still be run locally.
+      # What does run is every synthetic test, including the ones covering the
+      # atomic write and the path-length guard — the two places where the
+      # platform is actually load-bearing.
+      - name: Test
+        run: dotnet test --no-build
+
+      # Trimmed, single-file, self-contained, per Directory.Build.props. This
+      # also proves the trim stays clean on Windows specifically: a trim
+      # warning is an error, and Windows pulls in a different set of framework
+      # assemblies than Linux does.
+      - name: Publish the command line
+        run: dotnet publish src/Perianth.Cli -c Release -r ${{ matrix.rid }} --self-contained -o out/cli
+
+      - name: Publish the window
+        run: dotnet publish src/Perianth.Gui -c Release -r ${{ matrix.rid }} --self-contained -o out/gui
+
+      # Only the two executables. Needing anything beside them is itself a
+      # finding, so collecting only these is what keeps that honest instead of
+      # hiding a loose DLL among the rest.
+      #
+      # Archived rather than uploaded bare, because a release asset carries no
+      # file mode: a bare Linux binary arrives without its executable bit and
+      # will not run.
+      - name: Collect them (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p staging dist
+          cp out/cli/perianth out/gui/perianth-gui staging/
+          tar -czf dist/perianth-${{ matrix.rid }}.tar.gz -C staging .
+
+      - name: Collect them (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path staging, dist | Out-Null
+          Copy-Item out/cli/perianth.exe staging/
+          Copy-Item out/gui/perianth-gui.exe staging/
+          Compress-Archive -Path staging/* -DestinationPath dist/perianth-${{ matrix.rid }}.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: perianth-${{ matrix.rid }}
+          path: dist/
+
+  release:
+    # Only for a version tag. Every other push builds and tests without
+    # publishing anything, so a release is something you ask for by tagging
+    # rather than something that happens to you.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: perianth-*
+          merge-multiple: true
+          path: dist
+
+      # The GitHub CLI is already on the runner. A third-party action would be
+      # one more thing to trust for a step that is one command.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes dist/*
+een run here is not that check.
 
 on:
   push:
