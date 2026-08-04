@@ -23,7 +23,7 @@ back-ups before usage.**
 > interoperability between file formats, and as a fun non-commercial project
 > for myself to attempt.
 
-## Getting it
+## How To Get The Tool
 
 Download the build for your platform and run it. Nothing to install: each
 download is a single file with no runtime or prerequisites.
@@ -76,21 +76,21 @@ archives. From there:
 - **Patches** makes a shareable patch out of a mod folder, or applies patches
   somebody sent you.
 
-The friction this removes is *finding the files*. Nothing in a character's own
-files tells you which animation poses it, so the window works that out.
 
 ### Posing, and why an export can look broken
 
 A model's parts are stored as a flat pile — every alternate state at once, and
 no hierarchy placing them. An animation is what selects between them and puts
-them where they belong. So **an unposed export looks wrong, and is not**: pieces
+them where they belong. So **an unposed export looks wrong, but really is not**: pieces
 missing, pieces doubled over each other, art that reads mirrored. If you see
-that, you exported without a pose.
+that, you may have exported without a pose.
 
 **A character** has a setup animation, found for you, and it is used by default.
+There may be a few characters, such as some animals, which lack this and may still
+export incorrectly.
 
 **A prop has no setup animation** — none in the game does; that convention is a
-character one. Instead it has its own animations, usually an intact idle and
+character one. Instead it has its **own animations**, usually an **intact idle** and
 one or more damaged states. Pick one from the *Animation* box, and an idle is
 usually the resting state you want. Which of them is "the" resting pose is not
 recorded anywhere, so the tool offers them rather than choosing.
@@ -209,8 +209,8 @@ perianth patch --make --new --edited my_new_texture.dds \
   --replaces camel/.../tex_mine_d.dds --out ./patches
 ```
 
-That is your file, so shipping all of it is fine — only the game's own bytes
-must stay with whoever owns the game. Applying it needs no original, and a set
+That is your file, so shipping all of it is fine — only **the game's own bytes
+must stay with whoever owns the game**. Applying it needs no original, and a set
 mixing both kinds works: give one `--original` per patch that needs one.
 
 Nothing is resolved behind your back: `export` only ever reads the files you
