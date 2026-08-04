@@ -1,0 +1,8 @@
+# Applies to the test tree only; the repository root .editorconfig still governs
+# everything else.
+
+[*.cs]
+# A test's name is a sentence stating what must be true, and it is read far more
+# often than it is called. Nothing in here is a public API surface, so the
+# identifier-naming rule buys nothing and costs the sentence.
+dotnet_diagnostic.CA1707.severity = none
