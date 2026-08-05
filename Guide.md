@@ -100,6 +100,11 @@ repo however, and any other repo, as you do so at your own risk.
 3. Select the texture.
 4. Select "Give this model its own copy from my image" and select your .png file (A copy may be converted to an uncompressed .dds format afterwards)
 5. You can select which particular parts of a model you wish the new texture to apply to. To find out part numbers on a model, simply view an exported .glb version in Blender
+
+Press on the part -> Go to properties editor -> Object Data Properties (the green triangle tab). The name at the very
+top should be something like mode3-record-(number).
+
+
 press on a part, and view its name. Each mesh is named something like Mode2 or Mode3 then -record- then N where N represents the part number you are looking for.
 If you wish to apply the new texture to multiple parts, enter each number separated by a comma.
 6. You can now either Write Mod or Save as Patches as shown earlier. 
