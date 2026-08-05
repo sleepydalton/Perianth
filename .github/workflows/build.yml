@@ -79,8 +79,8 @@ jobs:
       # whose outcome depends on core count and scheduling, which is exactly the
       # shape of a failure that lands on one platform, then the other, and never
       # on the machine you are trying to reproduce it on. The whole suite is
-      # 743 tests in under a second, so serialising it costs nothing.
-      #
+      # 743 tests in under a second, so serialising it costs nothing. It seems
+      # to have resolved the previous issues.
       # Asset-free by default: the DDS, PNG, SDF and editordata suites check the
       # readers against the game's own files, which cannot leave the author's
       # machine, so they skip here and must still be run locally. What does run
