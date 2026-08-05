@@ -1,14 +1,5 @@
 name: build
 
-# What this is for: nothing in this project had ever run on Windows, which is
-# the one platform its audience uses. A hosted runner settles the half of that a
-# machine can settle — that it compiles, that the tests pass, and that a
-# self-contained single file actually publishes.
-#
-# It settles none of the other half. Opening the window, loading a mod, reading
-# a GLB in Blender, clicking a file picker and rendering both themes still need
-# a person at a Windows desktop. A green run here is not that check.
-
 on:
   push:
   pull_request:
