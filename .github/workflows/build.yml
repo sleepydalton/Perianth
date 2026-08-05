@@ -5,6 +5,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+
 jobs:
   build:
     strategy:
@@ -20,42 +25,90 @@ jobs:
             rid: win-x64
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
 
     steps:
+      # Before the checkout, because it decides how the checkout writes files.
+      # Git for Windows rewrites LF to CRLF on the way to the working tree by
+      # default, which changes the bytes of every text file the build embeds —
+      # spec_vectors.json among them. A test comparing content it read from a
+      # resource then fails on Windows and nowhere else, for a reason nothing in
+      # the diff shows.
+      - name: Check out the same bytes on both platforms
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
       - uses: actions/checkout@v7
 
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
+      # Which SDK actually got picked. A build that behaves differently on the
+      # two runners is worth being able to attribute, and this is the first
+      # thing you want when it does.
+      - name: Say which SDK this is
+        run: dotnet --info
+
+      - name: Restore
+        run: dotnet restore
+
       # Warnings are errors, set in Directory.Build.props. On a platform nobody
       # had compiled for that is a real claim rather than a formality: path
       # handling and file APIs differ enough to produce new ones.
       - name: Build
-        run: dotnet build
+        run: dotnet build --no-restore
 
-      # Asset-free by default. The DDS, PNG, SDF and editordata suites check
-      # the readers against the game's own files, which cannot leave the
-      # author's machine, so they skip here and must still be run locally.
-      # What does run is every synthetic test, including the ones covering the
-      # atomic write and the path-length guard — the two places where the
-      # platform is actually load-bearing.
+      # The tests are run by executing the test assembly, not through
+      # `dotnet test`. Two reasons, both about being able to act on a red run:
+      #
+      #  - `dotnet test` prints a count and writes the failing test names and
+      #    their assertions to a UTF-16 log under TestResults that nobody would
+      #    think to look for. The assembly writes them to stdout, which is the
+      #    log you are already reading.
+      #  - it removes a layer. `--no-build` coupling, the test-platform host and
+      #    the SDK's runner all sit between the failure and the output, and none
+      #    of them is what is being tested here.
+      #
+      # `-parallel none` is the load-bearing flag, not a formality. xUnit
+      # parallelises by collection, and the GUI view-model tests touch
+      # `Dispatcher.UIThread` — process-global state that binds to whichever
+      # thread reaches it first. Two collections pumping it at once is a race
+      # whose outcome depends on core count and scheduling, which is exactly the
+      # shape of a failure that lands on one platform, then the other, and never
+      # on the machine you are trying to reproduce it on. The whole suite is
+      # 743 tests in under a second, so serialising it costs nothing.
+      #
+      # Asset-free by default: the DDS, PNG, SDF and editordata suites check the
+      # readers against the game's own files, which cannot leave the author's
+      # machine, so they skip here and must still be run locally. What does run
+      # is every synthetic test, including the ones covering the atomic write
+      # and the path-length guard — the two places where the platform is
+      # actually load-bearing.
       - name: Test
-        run: dotnet test --no-build
-
-      # dotnet test prints a count and nothing else, while the platform writes
-      # the failing test names and their assertions to a UTF-16 log under
-      # TestResults that nobody would think to look for. A red run that does not
-      # say what broke is a run you cannot act on, and this cost a round trip
-      # the first time a test failed here and passed everywhere else.
-      - name: Say what failed
-        if: failure()
         shell: bash
         run: |
-          for log in tests/Perianth.Tests/bin/Debug/net10.0/TestResults/*.log; do
-            echo "===== $log"
-            iconv -f UTF-16 -t UTF-8 "$log" 2>/dev/null || cat "$log"
-          done
+          runner=tests/Perianth.Tests/bin/Debug/net10.0/Perianth.Tests
+          if [ "$RUNNER_OS" = "Windows" ]; then runner="$runner.exe"; fi
+          mkdir -p TestResults
+          "$runner" \
+            -noColor \
+            -noLogo \
+            -parallel none \
+            -showLiveOutput \
+            -xml TestResults/${{ matrix.rid }}.xml
+
+      # Kept whether or not the run was green, because the interesting
+      # comparison is usually between a red platform and the green one.
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.rid }}
+          path: TestResults/
+          if-no-files-found: warn
 
       # Trimmed, single-file, self-contained, per Directory.Build.props. This
       # also proves the trim stays clean on Windows specifically: a trim
@@ -123,6 +176,7 @@ jobs:
       # fallback the website route builds cleanly and then publishes nothing,
       # which looks like success everywhere except the page people download
       # from.
+      #
       # GH_REPO because this job never checks the repository out — it only
       # downloads what the build made. Without a working tree gh has no git
       # remote to infer the repo from, and fails before it reaches GitHub at
