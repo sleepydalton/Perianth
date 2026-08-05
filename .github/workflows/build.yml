@@ -1,5 +1,14 @@
 name: build
 
+# What this is for: nothing in this project had ever run on Windows, which is
+# the one platform its audience uses. A hosted runner settles the half of that a
+# machine can settle — that it compiles, that the tests pass, and that a
+# self-contained single file actually publishes.
+#
+# It settles none of the other half. Opening the window, loading a mod, reading
+# a GLB in Blender, clicking a file picker and rendering both themes still need
+# a person at a Windows desktop. A green run here is not that check.
+
 on:
   push:
   pull_request:
@@ -42,6 +51,20 @@ jobs:
       # platform is actually load-bearing.
       - name: Test
         run: dotnet test --no-build
+
+      # dotnet test prints a count and nothing else, while the platform writes
+      # the failing test names and their assertions to a UTF-16 log under
+      # TestResults that nobody would think to look for. A red run that does not
+      # say what broke is a run you cannot act on, and this cost a round trip
+      # the first time a test failed here and passed everywhere else.
+      - name: Say what failed
+        if: failure()
+        shell: bash
+        run: |
+          for log in tests/Perianth.Tests/bin/Debug/net10.0/TestResults/*.log; do
+            echo "===== $log"
+            iconv -f UTF-16 -t UTF-8 "$log" 2>/dev/null || cat "$log"
+          done
 
       # Trimmed, single-file, self-contained, per Directory.Build.props. This
       # also proves the trim stays clean on Windows specifically: a trim
