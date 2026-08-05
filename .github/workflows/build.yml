@@ -81,15 +81,6 @@ jobs:
       #    the SDK's runner all sit between the failure and the output, and none
       #    of them is what is being tested here.
       #
-      # `-parallel none` is the load-bearing flag, not a formality. xUnit
-      # parallelises by collection, and the GUI view-model tests touch
-      # `Dispatcher.UIThread` — process-global state that binds to whichever
-      # thread reaches it first. Two collections pumping it at once is a race
-      # whose outcome depends on core count and scheduling, which is exactly the
-      # shape of a failure that lands on one platform, then the other, and never
-      # on the machine you are trying to reproduce it on. The whole suite is
-      # 743 tests in under a second, so serialising it costs nothing.
-      #
       # Asset-free by default: the DDS, PNG, SDF and editordata suites check the
       # readers against the game's own files, which cannot leave the author's
       # machine, so they skip here and must still be run locally. What does run
@@ -105,7 +96,6 @@ jobs:
           "$runner" \
             -noColor \
             -noLogo \
-            -parallel none \
             -showLiveOutput \
             -xml TestResults/${{ matrix.rid }}.xml
 
