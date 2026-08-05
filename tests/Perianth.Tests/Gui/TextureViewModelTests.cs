@@ -51,7 +51,7 @@ public sealed class TextureViewModelTests
         Unresolved: ImmutableArray<string>.Empty);
 
     [Fact]
-    public void Showing_another_model_leaves_nothing_selected()
+    public void Showing_another_model_leaves_nothing_selected() => UiThread.Run(() =>
     {
         TextureViewModel model = new();
         model.Show(Assets("chr_a"));
@@ -65,10 +65,10 @@ public sealed class TextureViewModelTests
 
         Assert.Null(model.Selected);
         Assert.Empty(model.Thumbnails);
-    }
+    });
 
     [Fact]
-    public void Showing_another_model_replaces_the_grid_rather_than_emptying_it()
+    public void Showing_another_model_replaces_the_grid_rather_than_emptying_it() => UiThread.Run(() =>
     {
         // The guarantee that stops the crash. Emptying an ObservableCollection
         // a ListBox has bound raises a change its selection model must work
@@ -93,10 +93,10 @@ public sealed class TextureViewModelTests
         // bound to, which is the whole point.
         Assert.Equal(0, changes);
         Assert.Single(first);
-    }
+    });
 
     [Fact]
-    public void The_grid_is_replaced_before_the_selection_is_dropped()
+    public void The_grid_is_replaced_before_the_selection_is_dropped() => UiThread.Run(() =>
     {
         // The ordering two failed fixes got wrong. Assigning the selection is
         // what starts a selection update, so it must come after the source has
@@ -124,7 +124,7 @@ public sealed class TextureViewModelTests
         model.PropertyChanged -= Watch;
 
         Assert.Equal([nameof(TextureViewModel.Thumbnails), nameof(TextureViewModel.Selected)], order);
-    }
+    });
 
     [Fact]
     public void Nothing_staged_overlays_nothing()
