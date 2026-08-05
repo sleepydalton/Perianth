@@ -1,5 +1,14 @@
 name: build
 
+# What this is for: nothing in this project had ever run on Windows, which is
+# the one platform its audience uses. A hosted runner settles the half of that a
+# machine can settle — that it compiles, that the tests pass, and that a
+# self-contained single file actually publishes.
+#
+# It settles none of the other half. Opening the window, loading a mod, reading
+# a GLB in Blender, clicking a file picker and rendering both themes still need
+# a person at a Windows desktop. A green run here is not that check.
+
 on:
   push:
   pull_request:
@@ -79,8 +88,8 @@ jobs:
       # whose outcome depends on core count and scheduling, which is exactly the
       # shape of a failure that lands on one platform, then the other, and never
       # on the machine you are trying to reproduce it on. The whole suite is
-      # 743 tests in under a second, so serialising it costs nothing. It seems
-      # to have resolved the previous issues.
+      # 743 tests in under a second, so serialising it costs nothing.
+      #
       # Asset-free by default: the DDS, PNG, SDF and editordata suites check the
       # readers against the game's own files, which cannot leave the author's
       # machine, so they skip here and must still be run locally. What does run
