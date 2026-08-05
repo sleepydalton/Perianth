@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.IO;
 using Perianth.Formats.Diagnostics;
+using Perianth.Formats.Editordata;
 using Avalonia.Threading;
 using Perianth.Core.Content;
 using Perianth.Gui;
@@ -199,5 +200,80 @@ public sealed class TextureViewModelTests
         TextureViewModel model = new() { Parts = typed };
 
         Assert.Equal(expected, model.PartsNote);
+    }
+
+    // --- Edits surviving a write, so a second custom texture is possible.
+
+    private const string Paper = @"camel\baked\assets\textures\tex_kraft_d.dds";
+    private const string Other = @"camel\baked\assets\textures\tex_cranberry_d.dds";
+    private const string MineA = "camel/baked/assets/textures/perianth/a.dds";
+    private const string MineB = "camel/baked/assets/textures/perianth/b.dds";
+
+    private static EditordataFile TwoParts() => new(
+        "chr_test.editordata",
+        [Section(0, Paper), Section(1, Other)],
+        CustomVersion: 3);
+
+    private static EditordataSection Section(int ordinal, string diffuse) => new(
+        ordinal,
+        [new EditordataMaterial(
+            $"mat{ordinal}", "CamelDefaultShader", [new EditordataChannel("DiffuseColor", diffuse)])],
+        "intermediate",
+        [.. new byte[12]],
+        []);
+
+    private static string DiffuseOf(EditordataFile file, int section) =>
+        file.Sections[section].Materials[0].Channels[0].TexturePath;
+
+    [Fact]
+    public async Task A_second_custom_texture_builds_on_the_first_rather_than_replacing_it()
+    {
+        // The fault: writing a mod used the same reset as discarding one, so the
+        // model went back to what the archives hold. The next edit started from
+        // there, and the next write replaced the mod's editordata with one that
+        // had never carried the first repoint. Both images sat in the folder,
+        // one was bound, and nothing said so.
+        //
+        // Driven through WriteModAsync rather than the reset it calls, because
+        // the defect was the wiring: a first version of this test called that
+        // reset directly, passed, and went on passing with the fault put back.
+        string root = Directory.CreateTempSubdirectory("perianth-second-").FullName;
+
+        try
+        {
+            TextureViewModel model = new();
+            model.Load(TwoParts(), "camel/chr_test.editordata");
+
+            model.Apply(MaterialEdit.Repoint(model.Current!, Paper, MineA), _ => "first");
+            await model.WriteModAsync(root);
+
+            model.Apply(MaterialEdit.Repoint(model.Current!, Other, MineB), _ => "second");
+
+            Assert.Equal(MineA.Replace('/', '\\'), DiffuseOf(model.Current!, 0));
+            Assert.Equal(MineB.Replace('/', '\\'), DiffuseOf(model.Current!, 1));
+
+            // And what a second write would put in the folder is one editordata
+            // carrying both, which is what the loader reads.
+            Assert.Single(model.Replacing);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Discarding_still_returns_the_model_to_what_the_archives_hold()
+    {
+        // The other half of the same seam. Discard must undo the edits, or the
+        // next one builds on changes the user has just thrown away.
+        TextureViewModel model = new();
+        model.Load(TwoParts(), "camel/chr_test.editordata");
+
+        model.Apply(MaterialEdit.Repoint(model.Current!, Paper, MineA), _ => "first");
+        model.Forget();
+
+        Assert.Equal(Paper, DiffuseOf(model.Current!, 0));
+        Assert.Empty(model.Replacing);
     }
 }
