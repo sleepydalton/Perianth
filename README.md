@@ -56,6 +56,9 @@ point them at your own copy, so a normal run reports a dozen or so skipped and
 that is correct rather than broken. Each one names the environment variable it
 wants in its own source.
 
+NOTE: Although not a requirement, it is very useful for you to have something like
+Blender so you can view the .glb files , as no 3D preview is available in the tool currently.
+
 ## The window
 
 Open it, point it at your game's `camel/sdf/pc/data` folder, and it reads the
