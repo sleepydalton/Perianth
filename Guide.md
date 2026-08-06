@@ -110,6 +110,10 @@ If you wish to apply the new texture to multiple parts, enter each number separa
 6. You can now either Write Mod or Save as Patches as shown earlier. 
 NOTE - This method will should now automatically make a new .editordata file for the mod in the mod folder, or when generated from a patch is made, and allows the new texture to be used.
 
+
+**Important Tip!: Currently, to add multiple different textures to different parts of a model, do each new texture one at a time, and clear the path bar underneath between each new texture, that should hopefully work**
+
+
 ## Making Patches from a Mod Folder
 1. Select Patches near the top right of the tool.
 2. Select "Make Patches from a mod folder"
