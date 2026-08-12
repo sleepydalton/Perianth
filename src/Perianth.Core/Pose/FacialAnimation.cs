@@ -26,7 +26,8 @@ public static class FacialAnimation
 
     /// <summary>Animates <paramref name="model"/> under the body <paramref name="clip"/> with facial <paramref name="layers"/> overlaid.</summary>
     public static Result<AnimatedScene> Animate(
-        GeometryModel model, AnimFile setup, AnimFile clip, ImmutableArray<FacialLayer> layers)
+        GeometryModel model, AnimFile setup, AnimFile clip, ImmutableArray<FacialLayer> layers,
+        bool allowMissingParts = false)
     {
         System.ArgumentNullException.ThrowIfNull(model);
         System.ArgumentNullException.ThrowIfNull(setup);
@@ -48,7 +49,8 @@ public static class FacialAnimation
             return validated.Refusal;
         }
 
-        Result<PoseSampling.Association> association = PoseSampling.Associate(model, setup);
+        Result<PoseSampling.Association> association =
+            PoseSampling.Associate(model, setup, allowMissingParts);
         if (!association.TryGetValue(out PoseSampling.Association bindings, out Refusal? associateRefusal))
         {
             return associateRefusal;
@@ -123,7 +125,9 @@ public static class FacialAnimation
 
         if (keep.Length == 0)
         {
-            return Refusal.Unsupported("The setup hierarchy and visibility select no mesh parts.");
+            return Refusal.Unsupported(
+                "The setup hierarchy and visibility select no mesh parts.",
+                DiagnosticIds.PoseSelectsNothing);
         }
 
         HashSet<(int Node, int Channel)> facialOwned = FacialOwned(setup, layers);
@@ -137,7 +141,7 @@ public static class FacialAnimation
 
         SceneGraph graph = PoseSampling.BuildGraph(model, setup, sampled[0], bindings.NodeOfPart, keep, attachmentScales);
         Animation animation = new("clip", times, [.. tracks]);
-        return Result.Ok(new AnimatedScene(new PosedScene(keep, graph, bindings.Unrigged), animation));
+        return Result.Ok(new AnimatedScene(new PosedScene(keep, graph, bindings.Unrigged), [animation]));
     }
 
     /// <summary>The glTF sampler times and the binary64 time each one is sampled at.</summary>
@@ -151,7 +155,7 @@ public static class FacialAnimation
     private static Result<Timeline> BuildTimeline(AnimFile clip, ImmutableArray<FacialLayer> layers)
     {
         double fps = clip.Fps;
-        double duration = (clip.SampleCount - 1) / fps;
+        double duration = (clip.PlayableSamples - 1) / fps;
         double durationTime = (float)duration;
 
         // An explicit blink is placed against this clip, so it must fit within it.
@@ -179,7 +183,7 @@ public static class FacialAnimation
         }
 
         List<double> raw = [];
-        for (int sample = 0; sample < clip.SampleCount; sample++)
+        for (int sample = 0; sample < clip.PlayableSamples; sample++)
         {
             raw.Add(sample / fps);
         }

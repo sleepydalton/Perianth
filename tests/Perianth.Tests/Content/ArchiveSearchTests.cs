@@ -111,4 +111,101 @@ public sealed class ArchiveSearchTests
         Assert.Equal(0, search.Count);
         Assert.Empty(search.Best("anything", limit: 10).Value.Best);
     }
+
+    [Fact]
+    public void A_file_type_narrows_a_search()
+    {
+        ArchiveSearch search = new(Index(
+            "a/chr_hero.mmb",
+            "a/chr_hero.editordata",
+            "a/chr_hero.cameldata"));
+
+        Result<(ImmutableArray<SdfPathEntry> Best, int Total)> found =
+            search.Best("hero", limit: 10, extension: ".mmb");
+
+        Assert.Equal(1, found.Value.Total);
+        Assert.Equal("a/chr_hero.mmb", found.Value.Best[0].Path);
+    }
+
+    [Fact]
+    public void A_file_type_alone_is_a_search()
+    {
+        // The reason text stopped being required. "Every model" is a question a
+        // browser should be able to answer, and there is no text in it.
+        ArchiveSearch search = new(Index(
+            "b/second.mmb", "a/first.mmb", "a/first.editordata"));
+
+        Result<(ImmutableArray<SdfPathEntry> Best, int Total)> found =
+            search.Best(string.Empty, limit: 10, extension: "mmb");
+
+        Assert.Equal(2, found.Value.Total);
+
+        // Path order, not relevance: with no query there is nothing to be
+        // relevant to, and ranking against nothing would order by length.
+        Assert.Equal(["a/first.mmb", "b/second.mmb"], found.Value.Best.Select(e => e.Path));
+    }
+
+    [Fact]
+    public void A_type_matches_the_extension_and_not_the_middle_of_a_name()
+    {
+        ArchiveSearch search = new(Index("a/mmb_notes.txt", "a/model.mmb"));
+
+        Result<(ImmutableArray<SdfPathEntry> Best, int Total)> found =
+            search.Best(string.Empty, limit: 10, extension: ".mmb");
+
+        Assert.Equal(1, found.Value.Total);
+        Assert.Equal("a/model.mmb", found.Value.Best[0].Path);
+    }
+
+    [Fact]
+    public void Neither_text_nor_a_type_is_refused()
+    {
+        ArchiveSearch search = new(Index("a/model.mmb"));
+
+        Result<(ImmutableArray<SdfPathEntry> Best, int Total)> found =
+            search.Best(string.Empty, limit: 10, extension: null);
+
+        Assert.False(found.IsSuccess);
+        Assert.Equal(RefusalKind.Unsupported, found.Refusal!.Kind);
+    }
+
+    [Fact]
+    public void The_first_page_is_the_first_paths_in_order_and_says_how_many_there_are()
+    {
+        // What a browser shows before anything is asked of it. Bounded the same
+        // way a search is: it must not sort the whole archive to show a page.
+        ArchiveSearch search = new(Index("d.mmb", "a.mmb", "c.mmb", "b.mmb"));
+
+        (ImmutableArray<SdfPathEntry> page, int total) = search.First(2);
+
+        Assert.Equal(["a.mmb", "b.mmb"], page.Select(e => e.Path));
+        Assert.Equal(4, total);
+    }
+
+    [Fact]
+    public void A_page_larger_than_the_index_is_the_whole_index()
+    {
+        ArchiveSearch search = new(Index("b.mmb", "a.mmb"));
+
+        (ImmutableArray<SdfPathEntry> page, int total) = search.First(50);
+
+        Assert.Equal(["a.mmb", "b.mmb"], page.Select(e => e.Path));
+        Assert.Equal(2, total);
+    }
+
+    [Fact]
+    public void The_types_present_are_counted_rather_than_listed()
+    {
+        ArchiveSearch search = new(Index(
+            "a/one.mmb", "a/two.mmb", "a/three.dds", "a/folder/noextension"));
+
+        ImmutableArray<(string Extension, int Count)> types = search.Extensions();
+
+        Assert.Equal((".mmb", 2), types[0]);
+        Assert.Equal((".dds", 1), types[1]);
+
+        // A path with no extension is not a type. Counting it as one would put
+        // an unnameable entry in a dropdown.
+        Assert.Equal(2, types.Length);
+    }
 }

@@ -47,10 +47,17 @@ public sealed record GlbWriteOptions
     public SceneGraph? SceneGraph { get; init; }
 
     /// <summary>
-    /// The clip animation to attach, or null for a still. Its tracks address the
+    /// The animations to attach, empty for a still. Each one's tracks address the
     /// nodes of <see cref="SceneGraph"/>.
     /// </summary>
-    public Animation? Animation { get; init; }
+    /// <remarks>
+    /// glTF's <c>animations</c> is an array and Blender imports each entry as its
+    /// own Action, so several need no extension — only that each carries a name
+    /// worth picking from a list. They are written in the order given, and each
+    /// gets its own time accessor followed by its own outputs, so one animation
+    /// lays out exactly as it did when only one was possible.
+    /// </remarks>
+    public ImmutableArray<Animation> Animations { get; init; } = [];
 }
 
 /// <summary>
@@ -102,7 +109,7 @@ public static class GlbWriter
         ArgumentNullException.ThrowIfNull(materials);
         ArgumentNullException.ThrowIfNull(options);
 
-        Result<Layout> layout = Plan(model, materials, options.Animation);
+        Result<Layout> layout = Plan(model, materials, options.Animations);
         if (!layout.IsSuccess)
         {
             return layout.Refusal;
@@ -123,12 +130,13 @@ public static class GlbWriter
     /// Works out every accessor and buffer view before a byte is written, so a
     /// file too large to describe is refused rather than half built.
     /// </summary>
-    private static Result<Layout> Plan(GeometryModel model, MaterialSet materials, Animation? animation)
+    private static Result<Layout> Plan(GeometryModel model, MaterialSet materials, ImmutableArray<Animation> animations)
     {
         List<AccessorPlan> accessors = [];
         List<int> firstAccessorOfPart = [];
         List<ImagePlan> images = [];
         List<AnimAccessor> animAccessors = [];
+        List<int> firstAccessorOfAnimation = [];
         long offset = 0;
 
         // Images are laid down first, matching the reference, and are the only
@@ -175,11 +183,13 @@ public static class GlbWriter
             }
         }
 
-        // The animation's time and output buffers follow the geometry, still four
+        // Each animation's time and output buffers follow the geometry, still four
         // bytes wide, so they abut without padding. The time accessor carries its
-        // bounds; the outputs need none.
-        if (animation is { } clip)
+        // bounds; the outputs need none. Several animations simply repeat the
+        // block, each recording where its own accessors begin.
+        foreach (Animation clip in animations)
         {
+            firstAccessorOfAnimation.Add(accessors.Count + animAccessors.Count);
             float[] times = [.. clip.Times];
             float min = times.Length == 0 ? 0f : times[0];
             float max = times.Length == 0 ? 0f : times[0];
@@ -215,7 +225,7 @@ public static class GlbWriter
 
         // Every accessor element is four bytes wide, so accessors abut exactly
         // once the image block before them has been aligned.
-        return Result.Ok(new Layout(accessors, firstAccessorOfPart, images, animAccessors, (int)offset));
+        return Result.Ok(new Layout(accessors, firstAccessorOfPart, images, animAccessors, firstAccessorOfAnimation, (int)offset));
     }
 
     private static Result<byte[]> Pack(GeometryModel model, MaterialSet materials, Layout layout, byte[] bin)
@@ -360,7 +370,7 @@ public static class GlbWriter
             WriteSamplers(writer, materials);
             WriteMaterials(writer, materials, doubleSided, needDefaultMaterial);
             WriteExtensionsUsed(writer, materials);
-            WriteAnimations(writer, options.Animation, layout);
+            WriteAnimations(writer, options.Animations, layout);
 
             writer.WriteEndObject();
         }
@@ -887,50 +897,59 @@ public static class GlbWriter
         return Math.Max(0, wraps.IndexOf(TextureWrap.Repeat));
     }
 
-    private static void WriteAnimations(Utf8JsonWriter writer, Animation? animation, Layout layout)
+    private static void WriteAnimations(Utf8JsonWriter writer, ImmutableArray<Animation> animations, Layout layout)
     {
-        if (animation is not { } clip)
+        if (animations.IsDefaultOrEmpty)
         {
             return;
         }
 
         writer.WriteStartArray("animations");
-        writer.WriteStartObject();
-        writer.WriteString("name", clip.Name);
-
-        // The time accessor is shared by every sampler; each track has its own
-        // output accessor, laid out immediately after it.
-        writer.WriteStartArray("samplers");
-        for (int j = 0; j < clip.Tracks.Length; j++)
+        for (int i = 0; i < animations.Length; i++)
         {
-            writer.WriteStartObject();
-            writer.WriteNumber("input", layout.FirstAnimAccessor);
-            writer.WriteNumber("output", layout.FirstAnimAccessor + 1 + j);
-            writer.WriteString("interpolation", clip.Tracks[j].Interpolation == TrackInterpolation.Step ? "STEP" : "LINEAR");
-            writer.WriteEndObject();
-        }
+            Animation clip = animations[i];
+            int first = layout.FirstAccessorOfAnimation(i);
 
-        writer.WriteEndArray();
-
-        writer.WriteStartArray("channels");
-        for (int j = 0; j < clip.Tracks.Length; j++)
-        {
             writer.WriteStartObject();
-            writer.WriteNumber("sampler", j);
-            writer.WriteStartObject("target");
-            writer.WriteNumber("node", clip.Tracks[j].Node);
-            writer.WriteString("path", clip.Tracks[j].Path switch
+            writer.WriteString("name", clip.Name);
+
+            // One time accessor per animation, shared by its own samplers; each
+            // track has its own output accessor, laid out immediately after it.
+            writer.WriteStartArray("samplers");
+            for (int j = 0; j < clip.Tracks.Length; j++)
             {
-                TrackPath.Translation => "translation",
-                TrackPath.Rotation => "rotation",
-                _ => "scale",
-            });
-            writer.WriteEndObject();
+                writer.WriteStartObject();
+                writer.WriteNumber("input", first);
+                writer.WriteNumber("output", first + 1 + j);
+                writer.WriteString("interpolation", clip.Tracks[j].Interpolation == TrackInterpolation.Step ? "STEP" : "LINEAR");
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+
+            // Sampler indices are per animation, so they restart at zero here
+            // rather than continuing across the array.
+            writer.WriteStartArray("channels");
+            for (int j = 0; j < clip.Tracks.Length; j++)
+            {
+                writer.WriteStartObject();
+                writer.WriteNumber("sampler", j);
+                writer.WriteStartObject("target");
+                writer.WriteNumber("node", clip.Tracks[j].Node);
+                writer.WriteString("path", clip.Tracks[j].Path switch
+                {
+                    TrackPath.Translation => "translation",
+                    TrackPath.Rotation => "rotation",
+                    _ => "scale",
+                });
+                writer.WriteEndObject();
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
             writer.WriteEndObject();
         }
 
-        writer.WriteEndArray();
-        writer.WriteEndObject();
         writer.WriteEndArray();
     }
 
@@ -1084,6 +1103,7 @@ public static class GlbWriter
         List<int> firstAccessorOfPart,
         List<ImagePlan> images,
         List<AnimAccessor> animAccessors,
+        List<int> firstAccessorOfAnimation,
         int binLength)
     {
         public List<AccessorPlan> Accessors { get; } = accessors;
@@ -1094,8 +1114,12 @@ public static class GlbWriter
 
         public int BinLength { get; } = binLength;
 
-        /// <summary>The accessor array index of the first animation accessor (the time input).</summary>
-        public int FirstAnimAccessor => Accessors.Count;
+        /// <summary>
+        /// The accessor array index of one animation's time input. Its output
+        /// accessors follow immediately, one per track, so the whole block is
+        /// addressable from this single number.
+        /// </summary>
+        public int FirstAccessorOfAnimation(int animation) => firstAccessorOfAnimation[animation];
 
         /// <summary>
         /// Where a part's accessors begin. Recorded during planning rather than

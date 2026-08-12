@@ -29,8 +29,38 @@ internal static class Program
           --mmb PATH         model geometry
           --cameldata PATH   the geometry's companion pools and constants
           --out PATH         the GLB to write
+          --clip-anim PATH   an animation to play against the setup. Repeatable,
+                             and needs --animate. Several play in order down one
+                             timeline, so pressing play shows all of them, and
+                             naming the same one twice repeats it
+          --separate-animations  keep each as its own animation instead, which is
+                             the right shape to build with and the harder one to
+                             look at: a viewer stashes them as separate tracks
           --source-space     omit the source-to-glTF presentation root
           --allow-unposed    export the complete part list even with a setup beside the inputs
+          --allow-missing-parts  pose with a hierarchy that does not account for
+                             the whole model, omitting and naming the parts it
+                             cannot place. For a model with no setup of its own,
+                             where a relative's hierarchy is the only one there is
+          --gap-anim PATH    a second hierarchy, consulted only for the parts
+                             --setup-anim cannot name, so a body posed by one
+                             relative can take its head from another. A still
+                             only: borrowed parts are placed rather than
+                             attached, so they cannot follow an animation
+          --with PATH        another model drawn into the same file, posed by the
+                             same --setup-anim. Repeatable: this is how a
+                             character is exported wearing its equipment. Its
+                             .cameldata sits beside it under the same name, and
+                             its .editordata too when materials are on. A still
+                             only, for now: each model brings its own copy of
+                             the hierarchy, so an animation would move one and
+                             leave the rest standing
+          --keep-empty-nodes keep hierarchy nodes that draw nothing and animate
+                             nothing. They are left out by default: a rig carries
+                             a joint for every part the game might show, so one
+                             character is 3,865 nodes to draw 37 meshes, and a
+                             dressed animated one ran at half speed in Blender
+                             until they were dropped. Nothing drawn changes
           --json             one line of machine-readable result instead of prose
 
         Extract options:
@@ -253,6 +283,7 @@ internal static class Program
             CultureInfo.InvariantCulture, $"{verb} refused ({Kind(refusal.Kind)}): {refusal.Message}"));
         return Refused;
     }
+
 
     private static int Fail(Refusal refusal, bool json, string? output, TextWriter error, TextWriter? standardOutput = null)
     {

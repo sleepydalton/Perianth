@@ -10,6 +10,11 @@ using System.Threading.Tasks;
 using Perianth.Core;
 using Perianth.Core.Audio;
 using Perianth.Core.Content;
+using Perianth.Core.Geometry;
+using Perianth.Core.Pose;
+using Perianth.Formats.Anim;
+using Perianth.Formats.Cameldata;
+using Perianth.Formats.Mmb;
 using Perianth.Formats.Diagnostics;
 using Perianth.Formats.Io;
 using Perianth.Formats.Lipsync;
@@ -42,10 +47,34 @@ public sealed class ExportViewModel : ViewModelBase
     /// <summary>Where the GLBs land, under the working folder.</summary>
     public const string ExportsFolder = "exports";
 
+    /// <summary>
+    /// Where the user's own files are laid out when an export uses them.
+    /// </summary>
+    /// <remarks>
+    /// Only ever the user's files — an edited texture, a mod folder they wrote.
+    /// The game's own files are read out of the archives and never written, so
+    /// this folder holds nothing that was not already theirs.
+    /// </remarks>
+    public const string OverridesFolder = "my-files";
+
+    /// <summary>
+    /// Where the summary starts warning that an export will take a moment.
+    /// </summary>
+    /// <remarks>
+    /// Not a cap, and deliberately not enforced. A whole character's 44 clips
+    /// exported in three and a half seconds to 6.4 MB, so nothing here is worth
+    /// refusing — the number exists only so that asking for a lot says it will
+    /// take a moment rather than appearing to hang.
+    /// </remarks>
+    private const int ManyClips = 12;
+
     private CancellationTokenSource? _running;
     private CharacterAssets? _assets;
     private ImmutableArray<SdfPathEntry> _paths = [];
     private string? _archiveRoot;
+    private string? _contentRoot;
+    private string? _rememberedArchives;
+    private bool _fillFromArchives;
     private string? _working;
     private string _status = "Choose a model, then a working folder.";
     private string _progress = string.Empty;
@@ -54,7 +83,12 @@ public sealed class ExportViewModel : ViewModelBase
     private bool _materials = true;
     private bool _staged = true;
     private string? _modFolder;
-    private ClipChoice? _clip;
+    private DonorChoice? _primaryDonor;
+    private DonorChoice? _gapDonor;
+    private string _donorNote = string.Empty;
+    private string _clipFilter = string.Empty;
+    private int _queuedIndex = -1;
+    private bool _playInOrder = true;
     private bool _animate = true;
     private string _blinks = string.Empty;
     private bool _meshNeutralPupils;
@@ -78,6 +112,25 @@ public sealed class ExportViewModel : ViewModelBase
             facial.Changed += Describe;
             facial.SurveyRequested += choice => _ = SurveyAsync(choice);
         }
+
+        AddShownCommand = new RelayCommand(
+            () => { foreach (ClipChoice c in ShownClips) { Queue.Add(c); } ClipsChanged(); },
+            () => ShownClips.Count > 0);
+        ClearQueueCommand = new RelayCommand(
+            () => { Queue.Clear(); ClipsChanged(); },
+            () => Queue.Count > 0);
+        RemoveCommand = new RelayCommand(
+            () => { if (QueuedIndex >= 0) { Queue.RemoveAt(QueuedIndex); ClipsChanged(); } },
+            () => QueuedIndex >= 0);
+        MoveUpCommand = new RelayCommand(() => Move(-1), () => QueuedIndex > 0);
+        MoveDownCommand = new RelayCommand(() => Move(1), () => QueuedIndex >= 0 && QueuedIndex < Queue.Count - 1);
+        RepeatCommand = new RelayCommand(
+            () => { Queue.Insert(QueuedIndex + 1, Queue[QueuedIndex]); ClipsChanged(); },
+            () => QueuedIndex >= 0);
+
+        // Asked for rather than automatic: reading 665 hierarchies is seconds of
+        // work, and most models have a setup and never need it.
+        FindDonorsCommand = new RelayCommand(() => _ = FindDonorsAsync(), () => NeedsDonor && !_busy);
 
         ExtractCommand = new RelayCommand(() => _ = RunAsync(exportAfterwards: false), () => Ready);
         ExportCommand = new RelayCommand(() => _ = RunAsync(exportAfterwards: true), () => Ready);
@@ -133,7 +186,71 @@ public sealed class ExportViewModel : ViewModelBase
     /// <summary>What the last run had to say.</summary>
     public ObservableCollection<Note> Messages { get; } = [];
 
-    /// <summary>The clips this model can play, with "None" first.</summary>
+    /// <summary>
+    /// Hierarchies offered to pose a model that has none of its own.
+    /// </summary>
+    /// <remarks>
+    /// Twenty-nine of the game's characters ship without a setup ANIM, and
+    /// nothing in such a model's own files leads to one that fits. The list is
+    /// ranked, and each row says what it draws, because the choice is otherwise
+    /// between 665 identical-looking names.
+    /// </remarks>
+    public ObservableCollection<DonorChoice> PrimaryDonors { get; } = [];
+
+    /// <summary>Hierarchies offered for the parts the chosen pose cannot name.</summary>
+    public ObservableCollection<DonorChoice> GapDonors { get; } = [];
+
+    /// <summary>The hierarchy posing this model, where it has none of its own.</summary>
+    public DonorChoice? PrimaryDonor
+    {
+        get => _primaryDonor;
+        set
+        {
+            if (Set(ref _primaryDonor, value))
+            {
+                GapDonors.Clear();
+                GapDonor = null;
+                Raise(nameof(HasPrimaryDonor));
+                Describe();
+                _ = FindGapDonorsAsync();
+            }
+        }
+    }
+
+    /// <summary>The hierarchy filling what the pose cannot name.</summary>
+    public DonorChoice? GapDonor
+    {
+        get => _gapDonor;
+        set { if (Set(ref _gapDonor, value)) { Raise(nameof(DonorWarning)); Describe(); } }
+    }
+
+    /// <summary>Whether the search has found anything to choose from.</summary>
+    public bool HasDonors => PrimaryDonors.Count > 0;
+
+    /// <summary>Whether a gap filler can be chosen yet.</summary>
+    public bool HasPrimaryDonor => _primaryDonor is not null;
+
+    /// <summary>Whether this model needs a borrowed hierarchy at all.</summary>
+    public bool NeedsDonor => _assets is not null && _assets.Setup is null;
+
+    /// <summary>What the search found, or what it is doing.</summary>
+    public string DonorNote
+    {
+        get => _donorNote;
+        private set => Set(ref _donorNote, value);
+    }
+
+    /// <summary>
+    /// Said plainly when the chosen gap filler disagrees with the pose.
+    /// </summary>
+    /// <remarks>
+    /// The ranking already puts it last. This is for someone who picked it
+    /// anyway: the export will look like scattered wreckage, and the only clue
+    /// otherwise is opening it in a viewer.
+    /// </remarks>
+    public string DonorWarning => _gapDonor?.HasWarning == true ? _gapDonor.Warning : string.Empty;
+
+    /// <summary>Every clip this model can play; none chosen means a still.</summary>
     public ObservableCollection<ClipChoice> Clips { get; } = [];
 
     /// <summary>
@@ -147,29 +264,181 @@ public sealed class ExportViewModel : ViewModelBase
         new FacialChoice("Eyebrows", 6),
     ];
 
-    /// <summary>The clip to play, or none for a still.</summary>
+    /// <summary>
+    /// The first chosen clip, or none for a still.
+    /// </summary>
+    /// <remarks>
+    /// Several can be chosen now, so this is the first of them rather than the
+    /// selection itself. It stays because one clip is still the common case and
+    /// because a prop is posed by whichever animation comes first; setting it
+    /// means "choose exactly this one".
+    /// </remarks>
     public ClipChoice? Clip
     {
-        get => _clip;
+        get => Chosen.Count > 0 ? Chosen[0] : null;
         set
         {
-            if (Set(ref _clip, value))
+            Queue.Clear();
+            if (value is not null)
             {
-                Raise(nameof(HasClip));
-                Raise(nameof(PoseNote));
-                Raise(nameof(PoseLabel));
-                Describe();
+                ClipChoice row = Clips.FirstOrDefault(
+                    c => string.Equals(c.VirtualPath, value.VirtualPath, StringComparison.Ordinal)) ?? value;
+                if (!Clips.Contains(row))
+                {
+                    Clips.Add(row);
+                }
+
+                Queue.Add(row);
+            }
+
+            ClipsChanged();
+        }
+    }
+
+    /// <summary>
+    /// The animations to export, in the order they will play.
+    /// </summary>
+    /// <remarks>
+    /// A list rather than a set of ticks, because the order matters and the same
+    /// animation may appear twice. Ticking boxes could express neither.
+    /// </remarks>
+    public ObservableCollection<ClipChoice> Queue { get; } = [];
+
+    /// <summary>The chosen animations, in the order they play.</summary>
+    public IReadOnlyList<ClipChoice> Chosen => [.. Queue];
+
+    /// <summary>Which row of the queue the reordering buttons act on.</summary>
+    public int QueuedIndex
+    {
+        get => _queuedIndex;
+        set
+        {
+            if (Set(ref _queuedIndex, value))
+            {
+                RemoveCommand.Reconsider();
+                MoveUpCommand.Reconsider();
+                MoveDownCommand.Reconsider();
+                RepeatCommand.Reconsider();
             }
         }
     }
 
-    public bool HasClip => _clip is not null && _clip.VirtualPath is not null;
+    /// <summary>Play them in order down one timeline, rather than keeping each apart.</summary>
+    /// <remarks>
+    /// On by default: it is the one that shows something when a viewer presses
+    /// play. Separate animations arrive as tracks stashed across every animated
+    /// object, which is correct and almost unusable for checking an export.
+    /// </remarks>
+    public bool PlayInOrder
+    {
+        get => _playInOrder;
+        set { if (Set(ref _playInOrder, value)) { Raise(nameof(ClipSummary)); Describe(); } }
+    }
+
+    public bool HasClip => Queue.Count > 0;
+
+    /// <summary>Words to narrow the clip list by; a character can have hundreds.</summary>
+    public string ClipFilter
+    {
+        get => _clipFilter;
+        set
+        {
+            if (Set(ref _clipFilter, value))
+            {
+                ShowClips();
+            }
+        }
+    }
+
+    /// <summary>The clips the filter currently admits.</summary>
+    public ObservableCollection<ClipChoice> ShownClips { get; } = [];
+
+    /// <summary>
+    /// How many are chosen, and what that will cost.
+    /// </summary>
+    /// <remarks>
+    /// The warning is about waiting rather than a limit, because there is no
+    /// limit worth imposing: a character's whole set — 44 clips — measured 6.4 MB
+    /// and three and a half seconds, where the geometry is written once and each
+    /// animation adds only its own tracks. So this says what to expect and gets
+    /// out of the way.
+    /// </remarks>
+    public string ClipSummary
+    {
+        get
+        {
+            if (Clips.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            int chosen = Queue.Count;
+            if (chosen == 0)
+            {
+                return string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Nothing queued, so this is a still. {Clips.Count} to choose from.");
+            }
+
+            string count = string.Create(
+                CultureInfo.InvariantCulture, $"{chosen} queued of {Clips.Count}");
+
+            string shape = chosen == 1
+                ? "."
+                : _playInOrder
+                    ? ", playing one after another as a single animation."
+                    : ", each kept as its own animation.";
+
+            return chosen >= ManyClips
+                ? count + shape + " This will take a few seconds and make a large file."
+                : count + shape;
+        }
+    }
+
+    /// <summary>Look for a hierarchy that can pose a model lacking its own.</summary>
+    public RelayCommand FindDonorsCommand { get; }
+
+    /// <summary>Add every animation the filter is showing to the end of the queue.</summary>
+    public RelayCommand AddShownCommand { get; }
+
+    /// <summary>Empty the queue.</summary>
+    public RelayCommand ClearQueueCommand { get; }
+
+    /// <summary>Take the selected row out of the queue.</summary>
+    public RelayCommand RemoveCommand { get; }
+
+    /// <summary>Move the selected row earlier.</summary>
+    public RelayCommand MoveUpCommand { get; }
+
+    /// <summary>Move the selected row later.</summary>
+    public RelayCommand MoveDownCommand { get; }
+
+    /// <summary>Queue the selected row a second time, straight after itself.</summary>
+    public RelayCommand RepeatCommand { get; }
+
+    /// <summary>Adds one animation to the end of the queue.</summary>
+    public void Enqueue(ClipChoice choice)
+    {
+        ArgumentNullException.ThrowIfNull(choice);
+        Queue.Add(choice);
+        ClipsChanged();
+    }
+
+    private void Move(int by)
+    {
+        int from = _queuedIndex;
+        ClipChoice row = Queue[from];
+        Queue.RemoveAt(from);
+        Queue.Insert(from + by, row);
+        QueuedIndex = from + by;
+        ClipsChanged();
+    }
 
     /// <summary>Emit the whole clip rather than one sampled pose.</summary>
     public bool Animate
     {
         get => _animate;
-        set { if (Set(ref _animate, value)) { Describe(); } }
+        set { if (Set(ref _animate, value)) { Describe(); Raise(nameof(CostumeNote)); } }
     }
 
     /// <summary>
@@ -363,7 +632,7 @@ public sealed class ExportViewModel : ViewModelBase
                 return "Nothing in the archives poses this model, so it can only be exported as its complete part list.";
             }
 
-            return _clip is null
+            return Clip is null
                 ? string.Create(
                     CultureInfo.InvariantCulture,
                     $"No setup ANIM, which is normal for a prop: the Animation below is what poses it. Choose one of its {_assets.Clips.Length} — an idle is usually the resting state. Without one you get every alternate state at once: missing and doubled pieces, and art that reads mirrored.")
@@ -407,6 +676,46 @@ public sealed class ExportViewModel : ViewModelBase
 
     /// <summary>How many edits the texture pane is holding, for the note below.</summary>
     public Func<int>? StagedCount { get; set; }
+
+    /// <summary>
+    /// What the character is wearing, drawn into the same file.
+    /// </summary>
+    /// <remarks>
+    /// A function rather than a value because the costume pane owns the choice
+    /// and this pane only asks at the moment it composes. The two panes do not
+    /// know about each other; the window connects them.
+    /// </remarks>
+    public Func<ImmutableArray<WornModel>>? Equipment { get; set; }
+
+    /// <summary>
+    /// What will happen to what the character is wearing, when that is not
+    /// simply "it goes in".
+    /// </summary>
+    /// <remarks>
+    /// The pipeline refuses equipment alongside an animation, and its message
+    /// names command-line flags — which a window user cannot act on. So the
+    /// window does not produce that combination, and says so here instead.
+    /// </remarks>
+    public string CostumeNote
+    {
+        get
+        {
+            int worn = Equipment?.Invoke().Length ?? 0;
+            if (worn == 0)
+            {
+                return string.Empty;
+            }
+
+            string pieces = worn == 1 ? "1 worn piece" : $"{worn} worn pieces";
+
+            return _assets?.Setup is null && _primaryDonor is null
+                ? $"{pieces} left out: they need a pose to be drawn into."
+                : $"{pieces} will be exported with the character, and move with it.";
+        }
+    }
+
+    /// <summary>Says what is worn may have changed, so the note is re-read.</summary>
+    public void CostumeChanged() => Raise(nameof(CostumeNote));
 
     /// <summary>A mod folder to export against, or null for none.</summary>
     /// <remarks>
@@ -470,7 +779,74 @@ public sealed class ExportViewModel : ViewModelBase
     public void UseArchives(string archiveRoot, ImmutableArray<SdfPathEntry> paths)
     {
         _archiveRoot = archiveRoot;
+        _rememberedArchives = archiveRoot;
+        _contentRoot = null;
         _paths = paths;
+        Raise(nameof(IsFolderSource));
+        Raise(nameof(CanFillFromArchives));
+    }
+
+    /// <summary>
+    /// Takes a plain folder of loose files as the source instead of the archives.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The archive root is cleared rather than kept alongside. Browsing a folder
+    /// means exporting what is in it, and leaving a previously opened archive
+    /// underneath would silently fill the gaps in a mod folder with the game's
+    /// own files — which is the one thing someone checking their mod is trying
+    /// to find out.
+    /// </para>
+    /// <para>
+    /// Everything here that reads the archives directly — the hierarchy search,
+    /// the facial survey, finding a voice line — already gives up quietly when
+    /// there is no archive root, so those simply do nothing rather than needing
+    /// a second code path.
+    /// </para>
+    /// </remarks>
+    public void UseFolder(string contentRoot, ImmutableArray<SdfPathEntry> paths)
+    {
+        _contentRoot = contentRoot;
+        _archiveRoot = _fillFromArchives ? _rememberedArchives : null;
+        _paths = paths;
+        Raise(nameof(IsFolderSource));
+        Raise(nameof(CanFillFromArchives));
+    }
+
+    /// <summary>Whether a folder is what is being exported from.</summary>
+    public bool IsFolderSource => _contentRoot is not null;
+
+    /// <summary>Whether there are archives to fall back on at all.</summary>
+    public bool CanFillFromArchives => _contentRoot is not null && _rememberedArchives is not null;
+
+    /// <summary>
+    /// Whether files the folder does not hold come from the game's archives.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Off by default, and that is the point of it. A mod folder holds only what
+    /// was changed, so filling the gaps is the only way to export one at all —
+    /// but filling them silently is how a mod with a misspelt path exports
+    /// perfectly here and draws nothing in the game. Asking makes the difference
+    /// between "this is my mod" and "this is my mod over the game" a thing the
+    /// user said rather than a thing the tool assumed.
+    /// </para>
+    /// <para>
+    /// It re-enables the archive-backed parts of this pane too — the hierarchy
+    /// search, the facial survey, finding a voice line — because when it is on,
+    /// the archives really are available to them.
+    /// </para>
+    /// </remarks>
+    public bool FillFromArchives
+    {
+        get => _fillFromArchives;
+        set
+        {
+            if (Set(ref _fillFromArchives, value))
+            {
+                _archiveRoot = _contentRoot is null || value ? _rememberedArchives : null;
+            }
+        }
     }
 
     /// <summary>Takes the model the middle pane resolved.</summary>
@@ -485,16 +861,29 @@ public sealed class ExportViewModel : ViewModelBase
 
         // The options belong to the model that was resolved, so a new model
         // starts from its own defaults rather than the last one's leftovers.
+        PrimaryDonors.Clear();
+        GapDonors.Clear();
+        _primaryDonor = null;
+        _gapDonor = null;
+        DonorNote = string.Empty;
+        Raise(nameof(NeedsDonor));
+        Raise(nameof(PrimaryDonor));
+        Raise(nameof(GapDonor));
+        Raise(nameof(HasPrimaryDonor));
+        Raise(nameof(HasDonors));
+        FindDonorsCommand.Reconsider();
+
         Clips.Clear();
-        Clips.Add(ClipChoice.None);
         foreach (ResolvedAsset clip in assets.Clips)
         {
             Clips.Add(ClipChoice.For(clip.VirtualPath, assets.Name));
         }
 
-        _clip = Clips[0];
-        Raise(nameof(Clip));
-        Raise(nameof(HasClip));
+        Queue.Clear();
+        QueuedIndex = -1;
+        ClipFilter = string.Empty;
+        ShowClips();
+        ClipsChanged();
 
         Facial[0].Available = assets.Mouth is not null;
         Facial[1].Available = assets.Eyes is not null;
@@ -818,7 +1207,7 @@ public sealed class ExportViewModel : ViewModelBase
             ? checked_.Refusal.Message
             : string.Create(
                 CultureInfo.InvariantCulture,
-                $"Ready: {_assets.Paths().Length} files to {ExtractedFolder}/, then a GLB in {ExportsFolder}/.");
+                $"Ready: Export writes a GLB to {ExportsFolder}/ and nothing else. Extract writes the model's {_assets.Paths().Length} own files plus the textures they use, to {ExtractedFolder}/.");
     }
 
     /// <summary>
@@ -841,6 +1230,186 @@ public sealed class ExportViewModel : ViewModelBase
     /// applied nothing and said nothing.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// Finds the hierarchies that could pose a model with no setup of its own.
+    /// </summary>
+    /// <remarks>
+    /// On a background thread and only when asked: it reads every setup ANIM the
+    /// archives hold, which is 665 of them, and poses a shortlist. Counting is
+    /// cheap and posing is not, so the ranking does the counting first -- see
+    /// DonorSearch.
+    /// </remarks>
+    private async Task FindDonorsAsync()
+    {
+        if (_assets is null || _archiveRoot is null)
+        {
+            return;
+        }
+
+        DonorNote = "Looking for hierarchies that name this model's parts...";
+        PrimaryDonors.Clear();
+        PrimaryDonor = null;
+        Raise(nameof(HasDonors));
+
+        ImmutableArray<DonorCandidate> found = await Task.Run(() =>
+        {
+            Result<GeometryModel> geometry = ReadGeometry();
+            return geometry.IsSuccess
+                ? DonorSearch.Primaries(geometry.Value, ReadSetups(), declared: Declared())
+                : [];
+        }).ConfigureAwait(true);
+
+        foreach (DonorCandidate candidate in found)
+        {
+            PrimaryDonors.Add(new DonorChoice(candidate, isGapFiller: false));
+        }
+
+        Raise(nameof(HasDonors));
+        // Deliberately unconfident. An earlier wording said these "fit" and that
+        // the first "poses the most of it", and both overclaimed: none of them is
+        // this model's hierarchy, the ordering is by how much each draws rather
+        // than by how right it is, and on a real model the best result came from
+        // combining two that each ranked below the one drawing the most. Say
+        // what was counted and leave the judgement where it belongs.
+        DonorNote = PrimaryDonors.Count == 0
+            ? "No hierarchy in the archives names any of this model's parts."
+            : PrimaryDonors[0].Candidate.Declared
+                ? string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{PrimaryDonors.Count} to try, ordered by how much of the model each one draws. The first is the one the game's own files name for this character, which is a record and not a promise — try others, and try filling the gaps from a second.")
+                : string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{PrimaryDonors.Count} to try, ordered by how much of the model each one draws — which is not the same as which is right. Two together often cover more than any one alone, so try filling the gaps from a second.");
+    }
+
+    /// <summary>
+    /// The hierarchies the game's own actor definition names for this model.
+    /// </summary>
+    /// <remarks>
+    /// Two cheap reads rather than a search, and empty is the ordinary answer:
+    /// most models have no actor definition, and most systems name no setup. A
+    /// refusal here is not worth reporting — the search runs either way, and
+    /// this only decides the order within it.
+    /// </remarks>
+    private HashSet<string> Declared()
+    {
+        HashSet<string> declared = new(StringComparer.OrdinalIgnoreCase);
+        if (_assets is null || _archiveRoot is null)
+        {
+            return declared;
+        }
+
+        using ContentSources content = new(contentRoot: null, sdfRoot: _archiveRoot);
+        Result<ImmutableArray<string>> setups = AnimationSystems.SetupsFor(content, _assets.Model);
+        if (setups.TryGetValue(out ImmutableArray<string> named, out _))
+        {
+            declared.UnionWith(named);
+        }
+
+        return declared;
+    }
+
+    /// <summary>Finds hierarchies for the parts the chosen pose cannot name.</summary>
+    private async Task FindGapDonorsAsync()
+    {
+        if (_assets is null || _archiveRoot is null || _primaryDonor is null)
+        {
+            return;
+        }
+
+        string primaryPath = _primaryDonor.VirtualPath;
+        ImmutableArray<DonorCandidate> found = await Task.Run(() =>
+        {
+            Result<GeometryModel> geometry = ReadGeometry();
+            if (!geometry.IsSuccess)
+            {
+                return ImmutableArray<DonorCandidate>.Empty;
+            }
+
+            using SdfContentSource source = new(_archiveRoot);
+            Result<SdfContent> raw = source.Read(primaryPath);
+            if (!raw.TryGetValue(out SdfContent bytes, out _) || !bytes.IsPresent)
+            {
+                return ImmutableArray<DonorCandidate>.Empty;
+            }
+
+            Result<AnimFile> primary = AnimReader.Read(
+                SourceFile.FromMemory(primaryPath, bytes.Bytes), hierarchy: true);
+
+            return primary.IsSuccess
+                ? DonorSearch.GapFillers(geometry.Value, primary.Value, ReadSetups())
+                : [];
+        }).ConfigureAwait(true);
+
+        foreach (DonorCandidate candidate in found)
+        {
+            GapDonors.Add(new DonorChoice(candidate, isGapFiller: true));
+        }
+
+        Raise(nameof(HasPrimaryDonor));
+    }
+
+    /// <summary>The model's assembled geometry, read from the archives.</summary>
+    private Result<GeometryModel> ReadGeometry()
+    {
+        using SdfContentSource source = new(_archiveRoot!);
+
+        Result<SdfContent> mmbBytes = source.Read(_assets!.Model);
+        if (!mmbBytes.TryGetValue(out SdfContent mmbRaw, out Refusal? mmbRefusal) || !mmbRaw.IsPresent)
+        {
+            return mmbRefusal ?? Refusal.Resource("The archives hold no model.", DiagnosticIds.ResourceMissing);
+        }
+
+        Result<MmbModel> model = MmbReader.Read(SourceFile.FromMemory(_assets.Model, mmbRaw.Bytes));
+        if (!model.IsSuccess)
+        {
+            return model.Refusal;
+        }
+
+        Result<SdfContent> camBytes = source.Read(_assets.Cameldata!);
+        if (!camBytes.TryGetValue(out SdfContent camRaw, out Refusal? camRefusal) || !camRaw.IsPresent)
+        {
+            return camRefusal ?? Refusal.Resource("The archives hold no cameldata.", DiagnosticIds.ResourceMissing);
+        }
+
+        Result<CameldataFile> cameldata = CameldataReader.Read(
+            SourceFile.FromMemory(_assets.Cameldata!, camRaw.Bytes));
+
+        return cameldata.IsSuccess
+            ? GeometryAssembler.Assemble(model.Value, cameldata.Value)
+            : cameldata.Refusal;
+    }
+
+    /// <summary>Every setup ANIM the archives hold, read one at a time.</summary>
+    /// <remarks>
+    /// Streamed rather than gathered: 665 hierarchies held at once is a lot of
+    /// memory for a list that only two of them will be picked from.
+    /// </remarks>
+    private IEnumerable<(string Path, AnimFile Anim)> ReadSetups()
+    {
+        using SdfContentSource source = new(_archiveRoot!);
+        foreach (SdfPathEntry entry in _paths)
+        {
+            if (!entry.Path.EndsWith("_setup.anim", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            Result<SdfContent> raw = source.Read(entry.Path);
+            if (!raw.TryGetValue(out SdfContent bytes, out _) || !bytes.IsPresent)
+            {
+                continue;
+            }
+
+            Result<AnimFile> anim = AnimReader.Read(
+                SourceFile.FromMemory(entry.Path, bytes.Bytes), hierarchy: true);
+            if (anim.IsSuccess)
+            {
+                yield return (entry.Path, anim.Value);
+            }
+        }
+    }
+
     /// <returns>False when something was named and could not be read.</returns>
     internal bool ApplyOwnFiles(string working)
     {
@@ -849,7 +1418,7 @@ public sealed class ExportViewModel : ViewModelBase
             return true;
         }
 
-        string extracted = Path.Combine(working, ExtractedFolder);
+        string extracted = Path.Combine(working, OverridesFolder);
         int applied = 0;
 
         if (_modFolder is not null)
@@ -931,10 +1500,12 @@ public sealed class ExportViewModel : ViewModelBase
     internal ExportRequest Compose(string working)
     {
         CharacterAssets assets = _assets!;
-        string extracted = Path.Combine(working, ExtractedFolder);
 
-        string Local(string virtualPath) =>
-            Path.Combine(extracted, virtualPath.Replace('/', Path.DirectorySeparatorChar));
+        // Export reads the game's files straight out of the archives, so the
+        // inputs are archive paths and the only thing written is the GLB.
+        // Asking for a model never meant asking for a copy of the game.
+        string overrides = Path.Combine(working, OverridesFolder);
+        string Local(string virtualPath) => virtualPath;
 
         string name = assets.Model[(assets.Model.LastIndexOf('/') + 1)..];
         string stem = name[..name.LastIndexOf('.')];
@@ -944,15 +1515,30 @@ public sealed class ExportViewModel : ViewModelBase
         // what poses it. That is exactly what the command line does when given
         // --setup-anim <that idle>: prp_aframe_sign_citywok goes from 25 parts
         // with every state overlaid to the 9 that are the standing sign.
-        string? pose = assets.Setup?.VirtualPath ?? _clip?.VirtualPath;
+        // A borrowed hierarchy poses a model that has none of its own, and takes
+        // precedence over the prop convention of posing with the chosen clip:
+        // asking for one is a more specific statement than picking an animation.
+        string? pose = assets.Setup?.VirtualPath ?? _primaryDonor?.VirtualPath ?? Clip?.VirtualPath;
         bool posed = _pose && pose is not null;
 
         // Only a model with its own setup takes a second animation as a clip.
         // Where the chosen animation *is* the pose, passing it twice would ask
         // for a clip against itself.
-        string? clip = posed && assets.Setup is not null && _clip?.VirtualPath is string chosen
-            ? Local(chosen)
-            : null;
+        // With a setup of its own, every chosen animation plays against it. A
+        // prop is posed by the first, so the rest are its clips and the first is
+        // not passed again — that would be a clip against itself.
+        List<string> clips = [];
+        if (posed)
+        {
+            // Only where the first chosen animation *is* the pose is it left out
+            // of the clips. A borrowed hierarchy poses instead, so every chosen
+            // animation stays an animation.
+            bool clipIsThePose = assets.Setup is null && _primaryDonor is null;
+            foreach (ClipChoice choice in Chosen.Skip(clipIsThePose ? 1 : 0))
+            {
+                clips.Add(Local(choice.VirtualPath!));
+            }
+        }
 
         // A facial layer overlays a hierarchy, so without a pose there is
         // nothing to overlay and the atlases are left out rather than refused.
@@ -967,17 +1553,41 @@ public sealed class ExportViewModel : ViewModelBase
             Cameldata = assets.Cameldata is null ? string.Empty : Local(assets.Cameldata),
             Out = Path.Combine(working, ExportsFolder, Named(stem) + ".glb"),
             SetupAnim = posed ? Local(pose!) : null,
-            ClipAnim = clip,
-            Animate = clip is not null && _animate,
+            ClipAnims = [.. clips],
+            Animate = clips.Count > 0 && _animate,
+            SeparateAnimations = !_playInOrder,
             Editordata = _materials && assets.Editordata is not null ? Local(assets.Editordata) : null,
-            ContentRoot = _materials && assets.Editordata is not null ? extracted : null,
-            SdfRoot = _materials && assets.Editordata is not null ? _archiveRoot : null,
+            // The user's own files are tried first, then the archives — but only
+            // when there are some. ApplyOwnFiles runs before this and writes the
+            // folder only if something landed in it, so its existence is the
+            // question rather than whether the checkbox is ticked: a ticked box
+            // with nothing staged would otherwise name a folder nobody created.
+            ContentRoot = Directory.Exists(overrides) ? overrides : _contentRoot,
+            SdfRoot = _archiveRoot,
+            // Stays on for a loose folder. Despite the name, this is the switch
+            // between "these paths are virtual, resolve them" and "these paths
+            // are files on disk" -- and a folder that mirrors the archive's
+            // paths is resolved the same way, just with no archives behind it.
+            // Turning it off here was a plausible reading that refused every
+            // export from a folder, because the model path is then opened as a
+            // literal file and no such file exists.
+            ReadFromArchives = true,
             AllowUnposed = !posed,
+            // A borrowed hierarchy does not account for the whole model -- that
+            // is what makes it borrowed -- so the omissions are expected and
+            // reported rather than refused.
+            AllowMissingParts = _primaryDonor is not null,
+            GapAnim = _primaryDonor is not null ? _gapDonor?.VirtualPath : null,
+            // Only with a pose, which is the one thing the merge will not do
+            // without: it refuses a posed model beside an unposed one. An
+            // animation is no longer a reason to drop it -- the merge gives the
+            // character's tracks to everything sharing its skeleton.
+            With = posed ? Equipment?.Invoke() ?? [] : [],
             // Lip sync drives the mouth from the schedule, so it needs the
             // atlas and forbids a fixed state - the two would contradict.
             MouthAnim = Speaking(assets, posed) ? Local(assets.Mouth!.VirtualPath) : Atlas(assets.Mouth, Facial[0]),
             MouthState = Speaking(assets, posed) ? null : State(Facial[0]),
-            EyesAnim = Atlas(assets.Eyes, Facial[1]) ?? BlinkAtlas(assets, posed, extracted),
+            EyesAnim = Atlas(assets.Eyes, Facial[1]) ?? BlinkAtlas(assets, posed),
             EyeState = State(Facial[1]),
             PupilsAnim = Atlas(assets.Pupils, Facial[2]),
             PupilState = State(Facial[2]),
@@ -988,10 +1598,52 @@ public sealed class ExportViewModel : ViewModelBase
             LipsyncDatabase = Speaking(assets, posed) ? Local(assets.LipsyncDatabase!) : null,
             SpeechId = Speaking(assets, posed) ? _speechId.Trim() : null,
             WemRoot = Speaking(assets, posed) && _audio && SpeechWem() is not null
-                ? Path.Combine(extracted, "camel", "voice")
+                ? Path.Combine(working, ExtractedFolder, "camel", "voice")
                 : null,
             VgmstreamCli = Speaking(assets, posed) && _audio ? _vgmstream : null,
         };
+    }
+
+    /// <summary>The whole kit: every file the model could want.</summary>
+    private ImmutableArray<string> AllPaths() =>
+        SpeechWem() is string wem ? _assets!.Paths().Add(wem) : _assets!.Paths();
+
+    /// <summary>
+    /// Everything an extraction should hand over: the model's own files, and the
+    /// textures its materials bind.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="AllPaths"/> cannot include the textures, because everything it
+    /// lists was found by naming convention and a texture is not named after the
+    /// model. Reading the editordata is the only way to reach them, so this is
+    /// asynchronous where that is not.
+    /// </para>
+    /// <para>
+    /// The window has its own extraction path, separate from the command line's,
+    /// and adding the textures to only one of them left this one quietly writing
+    /// a kit that could not be exported from. Both call the same Core rule now.
+    /// </para>
+    /// </remarks>
+    public async Task<ImmutableArray<string>> KitAsync()
+    {
+        ImmutableArray<string> own = AllPaths();
+        CharacterAssets assets = _assets!;
+        ImmutableArray<SdfPathEntry> paths = _paths;
+        (string? content, string? sdf) = (_contentRoot, _archiveRoot);
+
+        return await Task.Run(() =>
+        {
+            using ContentSources sources = new(content, sdf);
+            Result<ImmutableArray<string>> bound =
+                ArchiveExtraction.BoundTextures(paths, sources, assets);
+
+            // A model whose textures cannot be listed is still worth extracting.
+            // The export refuses over the missing one later, naming it.
+            return bound.TryGetValue(out ImmutableArray<string> textures, out _)
+                ? own.AddRange(textures)
+                : own;
+        }).ConfigureAwait(true);
     }
 
     /// <summary>Whether this export plays a speech schedule.</summary>
@@ -1006,15 +1658,8 @@ public sealed class ExportViewModel : ViewModelBase
     /// Blink drives the eye atlas from explicit events, so the atlas is required
     /// while its state is only the optional hold between them.
     /// </remarks>
-    private string? BlinkAtlas(CharacterAssets assets, bool posed, string extracted)
-    {
-        if (!posed || assets.Eyes is null || ParseBlinks().Length == 0)
-        {
-            return null;
-        }
-
-        return Path.Combine(extracted, assets.Eyes.VirtualPath.Replace('/', Path.DirectorySeparatorChar));
-    }
+    private string? BlinkAtlas(CharacterAssets assets, bool posed) =>
+        !posed || assets.Eyes is null || ParseBlinks().Length == 0 ? null : assets.Eyes.VirtualPath;
 
     /// <summary>Reads the blink times, ignoring what is not yet a number.</summary>
     /// <remarks>
@@ -1048,13 +1693,62 @@ public sealed class ExportViewModel : ViewModelBase
     /// overwritten twice — and the name is the only place the window can say
     /// which is which.
     /// </remarks>
+    /// <summary>Re-checks everything that depends on which clips are chosen.</summary>
+    private void ClipsChanged()
+    {
+        Raise(nameof(Clip));
+        Raise(nameof(Chosen));
+        Raise(nameof(HasClip));
+        Raise(nameof(ClipSummary));
+        Raise(nameof(PoseNote));
+        Raise(nameof(PoseLabel));
+        AddShownCommand.Reconsider();
+        ClearQueueCommand.Reconsider();
+        RemoveCommand.Reconsider();
+        MoveUpCommand.Reconsider();
+        MoveDownCommand.Reconsider();
+        RepeatCommand.Reconsider();
+        Describe();
+    }
+
+    /// <summary>
+    /// Refills the shown list from the filter.
+    /// </summary>
+    /// <remarks>
+    /// A filter rather than a longer scroll: a character can carry hundreds of
+    /// clips, and the one being looked for is usually named after what it does.
+    /// Hiding a row does not untick it — the chosen set survives retyping the
+    /// search, which is what makes picking a few from several searches possible
+    /// at all.
+    /// </remarks>
+    private void ShowClips()
+    {
+        ShownClips.Clear();
+        foreach (ClipChoice choice in Clips)
+        {
+            if (_clipFilter.Length == 0 ||
+                choice.Label.Contains(_clipFilter, StringComparison.OrdinalIgnoreCase))
+            {
+                ShownClips.Add(choice);
+            }
+        }
+
+        AddShownCommand.Reconsider();
+    }
+
     private string Named(string stem)
     {
         List<string> parts = [stem];
 
-        if (_clip?.VirtualPath is not null)
+        if (Chosen.Count == 1)
         {
-            parts.Add(_clip.Label.Replace(' ', '_'));
+            parts.Add(Chosen[0].Label.Replace(' ', '_'));
+        }
+        else if (Chosen.Count > 1)
+        {
+            // Naming a file after twelve animations is not a name. The count is
+            // what distinguishes this export from the single-clip one beside it.
+            parts.Add(string.Create(CultureInfo.InvariantCulture, $"{Chosen.Count}_animations"));
         }
 
         // Every setting that changes what is drawn has to reach the name, or a
@@ -1112,11 +1806,6 @@ public sealed class ExportViewModel : ViewModelBase
 
         try
         {
-            if (!await ExtractAsync(mine).ConfigureAwait(true))
-            {
-                return;
-            }
-
             if (!ApplyOwnFiles(_working))
             {
                 return;
@@ -1201,19 +1890,12 @@ public sealed class ExportViewModel : ViewModelBase
     /// Shared by the single export and the survey: both need the same files
     /// present, and the survey would otherwise extract them once per state.
     /// </remarks>
-    private async Task<bool> ExtractAsync(CancellationTokenSource mine)
+    private async Task<bool> ExtractAsync(CancellationTokenSource mine, ImmutableArray<string> wanted)
     {
         CharacterAssets assets = _assets!;
         string working = _working!;
         string archives = _archiveRoot!;
         ImmutableArray<SdfPathEntry> paths = _paths;
-
-        // The voice file is not part of the character's set - nothing in a
-        // character's files names a speech ID - so it is added by the request
-        // that asked for it.
-        ImmutableArray<string> wanted = SpeechWem() is string wem
-            ? assets.Paths().Add(wem)
-            : assets.Paths();
 
         int total = wanted.Length;
 
@@ -1281,24 +1963,31 @@ public sealed class ExportViewModel : ViewModelBase
         {
             string working = _working;
 
-            if (!await ExtractAsync(mine).ConfigureAwait(true))
-            {
-                return;
-            }
-
-            int extractedCount = _extracted;
-
+            // Extract hands over the model's whole kit, which is what it is for.
+            // Export reads the game's files out of the archives and writes none
+            // of them: someone who asked for a model did not ask for a copy of
+            // the game, and used to get several hundred files anyway.
             if (!exportAfterwards)
             {
+                if (!await ExtractAsync(mine, await KitAsync().ConfigureAwait(true)).ConfigureAwait(true))
+                {
+                    return;
+                }
+
                 Status = string.Create(
                     CultureInfo.InvariantCulture,
-                    $"Extracted {extractedCount} files to {ExtractedFolder}/.");
+                    $"Extracted {_extracted} files to {ExtractedFolder}/.");
                 return;
             }
 
-            Say(NoteKind.Done, string.Create(
-                CultureInfo.InvariantCulture,
-                $"Extracted {extractedCount} files to {ExtractedFolder}/."));
+            // The one game file an export can still write, and only when the
+            // voice audio was asked for: vgmstream is a separate program and
+            // decodes a file on disk, so there is nothing to hand it otherwise.
+            if (SpeechWem() is string wem &&
+                !await ExtractAsync(mine, [wem]).ConfigureAwait(true))
+            {
+                return;
+            }
 
             if (!ApplyOwnFiles(working))
             {

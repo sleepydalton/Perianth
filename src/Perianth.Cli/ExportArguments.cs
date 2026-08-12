@@ -26,7 +26,13 @@ public static class ExportArguments
         string? cameldata = null;
         string? output = null;
         string? setupAnim = null;
-        string? clipAnim = null;
+        List<string> clipAnims = [];
+        bool separateAnimations = false;
+        bool allowMissingParts = false;
+        string? gapAnim = null;
+        bool pruneEmptyNodes = true;
+        List<WornModel> with = [];
+        bool readFromArchives = false;
         string? mouthAnim = null;
         int? mouthState = null;
         string? eyesAnim = null;
@@ -86,12 +92,24 @@ public static class ExportArguments
 
                     break;
 
+                // Repeatable: several play in order down one timeline, in the
+                // order given here, unless --separate-animations keeps them apart.
                 case "--clip-anim":
-                    if (!TryTake(arguments, ref i, out clipAnim))
+                    if (!TryTake(arguments, ref i, out string? clipAnim))
                     {
                         return Missing("--clip-anim");
                     }
 
+                    clipAnims.Add(clipAnim!);
+                    break;
+
+                // The inputs are archive paths, so nothing is written but the GLB.
+                case "--from-archives":
+                    readFromArchives = true;
+                    break;
+
+                case "--separate-animations":
+                    separateAnimations = true;
                     break;
 
                 case "--animate":
@@ -260,6 +278,44 @@ public static class ExportArguments
                     sourceSpace = true;
                     break;
 
+                // Two ways to draw another model into this one, differing only
+                // in whether it takes the character's own parts off underneath.
+                // A garment does; something worn on the face does not, and
+                // replacing there deletes the head rather than the hat.
+                case "--with":
+                    if (!TryTake(arguments, ref i, out string? alongside) || alongside is null)
+                    {
+                        return Missing("--with");
+                    }
+
+                    with.Add(new WornModel(alongside, Replaces: true));
+                    break;
+
+                case "--over":
+                    if (!TryTake(arguments, ref i, out string? onTop) || onTop is null)
+                    {
+                        return Missing("--over");
+                    }
+
+                    with.Add(new WornModel(onTop, Replaces: false));
+                    break;
+
+                case "--keep-empty-nodes":
+                    pruneEmptyNodes = false;
+                    break;
+
+                case "--gap-anim":
+                    if (!TryTake(arguments, ref i, out gapAnim))
+                    {
+                        return Missing("--gap-anim");
+                    }
+
+                    break;
+
+                case "--allow-missing-parts":
+                    allowMissingParts = true;
+                    break;
+
                 case "--allow-unposed":
                     allowUnposed = true;
                     break;
@@ -294,7 +350,13 @@ public static class ExportArguments
             Cameldata = cameldata,
             Out = output,
             SetupAnim = setupAnim,
-            ClipAnim = clipAnim,
+            ClipAnims = [.. clipAnims],
+            SeparateAnimations = separateAnimations,
+            AllowMissingParts = allowMissingParts,
+            GapAnim = gapAnim,
+            PruneEmptyNodes = pruneEmptyNodes,
+            With = [.. with],
+            ReadFromArchives = readFromArchives,
             Animate = animate,
             Time = time,
             MouthAnim = mouthAnim,

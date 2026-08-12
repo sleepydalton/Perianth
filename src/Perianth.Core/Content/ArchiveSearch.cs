@@ -60,14 +60,39 @@ public sealed class ArchiveSearch
     /// cosmetic. The total is reported separately because a caller showing the
     /// best few has to be able to say how many it is not showing.
     /// </remarks>
-    public Result<(ImmutableArray<SdfPathEntry> Best, int Total)> Best(string text, int limit)
+    public Result<(ImmutableArray<SdfPathEntry> Best, int Total)> Best(string text, int limit) =>
+        Best(text, limit, extension: null);
+
+    /// <summary>
+    /// The best matches for <paramref name="text"/> among paths of one file
+    /// type, and how many matched in total.
+    /// </summary>
+    /// <param name="extension">
+    /// A file extension, with or without its dot. Null or empty searches every
+    /// type.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// A type on its own is a search. "Every model" is a question worth being
+    /// able to ask, and it has no text in it — so text is only required when no
+    /// type narrows the answer, rather than always.
+    /// </para>
+    /// <para>
+    /// With no text there is nothing for the ranking to be relative to, so the
+    /// order is the path's own. Ranking against an empty query would put the
+    /// shortest paths first, which reads as significance and is not.
+    /// </para>
+    /// </remarks>
+    public Result<(ImmutableArray<SdfPathEntry> Best, int Total)> Best(string text, int limit, string? extension)
     {
         ArgumentNullException.ThrowIfNull(text);
 
         string wanted = SdfIndex.NormalizePath(text);
-        if (wanted.Length == 0)
+        string suffix = Suffix(extension);
+
+        if (wanted.Length == 0 && suffix.Length == 0)
         {
-            return Refusal.Unsupported("A search needs some text to look for.");
+            return Refusal.Unsupported("A search needs some text to look for, or a file type to list.");
         }
 
         // Keeping the worst of the best at the front, so the one to drop when a
@@ -79,7 +104,12 @@ public sealed class ArchiveSearch
 
         for (int i = 0; i < _normalized.Length; i++)
         {
-            if (!_normalized[i].Contains(wanted, StringComparison.Ordinal))
+            if (suffix.Length > 0 && !_normalized[i].EndsWith(suffix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (wanted.Length > 0 && !_normalized[i].Contains(wanted, StringComparison.Ordinal))
             {
                 continue;
             }
@@ -109,8 +139,117 @@ public sealed class ArchiveSearch
             best.Add(kept.Dequeue());
         }
 
-        best.Sort((left, right) => Rank.Compare(left.Path, right.Path, wanted));
+        best.Sort(wanted.Length == 0
+            ? (left, right) => string.CompareOrdinal(left.Path, right.Path)
+            : (left, right) => Rank.Compare(left.Path, right.Path, wanted));
         return Result.Ok((ImmutableArray.CreateRange(best), total));
+    }
+
+    /// <summary>
+    /// The first <paramref name="limit"/> paths in path order, and how many
+    /// there are.
+    /// </summary>
+    /// <remarks>
+    /// What a browser shows before anything has been asked of it. Separate from
+    /// <see cref="Best(string, int, string?)"/> rather than folded into it,
+    /// because a <em>search</em> with no subject is a caller that forgot one and
+    /// should still be refused — whereas a listing genuinely has no subject, and
+    /// saying so at the call site is clearer than a query that means "everything"
+    /// by being empty.
+    /// </remarks>
+    public (ImmutableArray<SdfPathEntry> Best, int Total) First(int limit)
+    {
+        List<SdfPathEntry> head;
+
+        if (limit <= 0 || limit >= _entries.Length)
+        {
+            head = [.. _entries];
+        }
+        else
+        {
+            // The same bounded selection the search uses, and for the same
+            // reason: sorting all 486,543 paths to show 500 of them costs about
+            // 1.8 seconds, and this runs the moment the archives are opened.
+            // Largest at the front, so the one to drop is the one in hand.
+            PriorityQueue<SdfPathEntry, SdfPathEntry> kept = new(new Latest());
+            for (int i = 0; i < _entries.Length; i++)
+            {
+                if (kept.Count < limit)
+                {
+                    kept.Enqueue(_entries[i], _entries[i]);
+                }
+                else if (string.CompareOrdinal(_entries[i].Path, kept.Peek().Path) < 0)
+                {
+                    kept.EnqueueDequeue(_entries[i], _entries[i]);
+                }
+            }
+
+            head = [];
+            while (kept.Count > 0)
+            {
+                head.Add(kept.Dequeue());
+            }
+        }
+
+        head.Sort((left, right) => string.CompareOrdinal(left.Path, right.Path));
+        return ([.. head], _entries.Length);
+    }
+
+    /// <summary>Orders the last path first, so it is the one dropped.</summary>
+    private sealed class Latest : IComparer<SdfPathEntry>
+    {
+        public int Compare(SdfPathEntry x, SdfPathEntry y) => string.CompareOrdinal(y.Path, x.Path);
+    }
+
+    /// <summary>
+    /// Every file type the archives hold, most numerous first, with its count.
+    /// </summary>
+    /// <remarks>
+    /// Measured rather than listed. A hard-coded set of types would be a guess
+    /// about what is in there that goes stale silently, and it would leave out
+    /// whatever nobody thought of — the archives hold types this project has no
+    /// reader for, and being able to see them is most of the point of a browser.
+    /// </remarks>
+    public ImmutableArray<(string Extension, int Count)> Extensions()
+    {
+        Dictionary<string, int> counts = new(StringComparer.Ordinal);
+        foreach (string path in _normalized)
+        {
+            int dot = path.LastIndexOf('.');
+            int slash = path.LastIndexOf('/');
+            if (dot <= slash)
+            {
+                continue;
+            }
+
+            string extension = path[dot..];
+            counts[extension] = counts.TryGetValue(extension, out int seen) ? seen + 1 : 1;
+        }
+
+        List<(string Extension, int Count)> ordered = [];
+        foreach (KeyValuePair<string, int> pair in counts)
+        {
+            ordered.Add((pair.Key, pair.Value));
+        }
+
+        // Count first, then the name, so the order is stable when two types tie.
+        ordered.Sort((left, right) => right.Count != left.Count
+            ? right.Count.CompareTo(left.Count)
+            : string.CompareOrdinal(left.Extension, right.Extension));
+
+        return [.. ordered];
+    }
+
+    /// <summary>The extension to match on, dotted and normalized, or empty.</summary>
+    private static string Suffix(string? extension)
+    {
+        if (string.IsNullOrWhiteSpace(extension))
+        {
+            return string.Empty;
+        }
+
+        string trimmed = SdfIndex.NormalizePath(extension.Trim());
+        return trimmed.StartsWith('.') ? trimmed : "." + trimmed;
     }
 
     /// <summary>Orders the least wanted first, so it is the one dropped.</summary>

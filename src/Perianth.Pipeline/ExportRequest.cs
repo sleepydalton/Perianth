@@ -7,6 +7,18 @@ using Perianth.Formats.Diagnostics;
 namespace Perianth.Pipeline;
 
 /// <summary>
+/// One model drawn alongside another, and how it sits on it.
+/// </summary>
+/// <param name="Path">The model to draw.</param>
+/// <param name="Replaces">
+/// Whether it takes the character's own parts off wherever it draws. A garment
+/// is worn instead of what is under it; face paint and spectacles are worn on
+/// top and take nothing off. Replacing is per joint and a joint holds many
+/// parts, so getting this wrong deletes a head rather than a hat.
+/// </param>
+public sealed record WornModel(string Path, bool Replaces = true);
+
+/// <summary>
 /// One export, described completely.
 /// </summary>
 /// <remarks>
@@ -50,17 +62,115 @@ public sealed record ExportRequest
     /// </remarks>
     public bool AllowUnposed { get; init; }
 
+    /// <summary>
+    /// Pose with a hierarchy that accounts for too little of the model, omitting
+    /// the parts it cannot name.
+    /// </summary>
+    /// <remarks>
+    /// For a model with no setup of its own -- 29 of the game's 918 characters --
+    /// where the only hierarchy available belongs to a relative. The parts it
+    /// cannot name are omitted and reported by name, exactly as unrigged parts
+    /// always are, so the export says what it left out. Off by default, because
+    /// a hierarchy that names little of a model is usually the wrong file rather
+    /// than a deliberate choice.
+    /// </remarks>
+    public bool AllowMissingParts { get; init; }
+
+    /// <summary>
+    /// A second hierarchy, consulted only for parts <see cref="SetupAnim"/>
+    /// cannot name.
+    /// </summary>
+    /// <remarks>
+    /// For a model with no setup of its own, posed by a relative's hierarchy that
+    /// stops somewhere -- a correct body with no head. Borrowed parts are placed
+    /// at the donor's world transform rather than parented, so they do not follow
+    /// an animation; the export says so.
+    /// </remarks>
+    public string? GapAnim { get; init; }
+
+    /// <summary>
+    /// Further models drawn into the same file, posed by the same hierarchy.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// What a character wears. Equipment is not a separate rig — every one of
+    /// the 1,196 equipment models has its parts named by the main character's
+    /// hierarchy — so a piece posed by the character's own setup lands exactly
+    /// where the character is, and combining them is arithmetic rather than
+    /// alignment.
+    /// </para>
+    /// <para>
+    /// Each names a model; its cameldata sits beside it under the same stem, and
+    /// its editordata too when materials were asked for. They are not named
+    /// separately because no equipment piece in the archives departs from that,
+    /// and three paths per piece would be three chances to mismatch them.
+    /// </para>
+    /// </remarks>
+    public ImmutableArray<WornModel> With { get; init; } = [];
+
+    /// <summary>
+    /// Leave out hierarchy nodes that draw nothing and animate nothing.
+    /// </summary>
+    /// <remarks>
+    /// A source hierarchy is a rig carrying a joint for every part the game
+    /// might show, and an export shows one appearance — so a main character
+    /// carries 3,865 nodes to draw 37 meshes, of which 92 are on a path to one.
+    /// The rest are inert here because nothing is skinned.
+    /// <para>
+    /// <b>On by default</b>, and a deliberate departure from the reference
+    /// exporter, which emits them all. Measured in Blender: a dressed, animated
+    /// character ran at half its clip's frame rate with 15,437 nodes and at full
+    /// rate with 240. A static scene does not care how many nodes it has, but an
+    /// animation makes every descendant of an animated node be re-evaluated
+    /// every frame, which is why this only shows up once something moves.
+    /// </para>
+    /// <para>
+    /// Turned off by <c>--keep-empty-nodes</c>, for comparing against the
+    /// reference or for anyone who wants the rig as the game spells it.
+    /// </para>
+    /// </remarks>
+    public bool PruneEmptyNodes { get; init; } = true;
+
     /// <summary>Emit one line of machine-readable result instead of prose.</summary>
     public bool Json { get; init; }
 
     /// <summary>The setup ANIM that places and selects the model's parts.</summary>
     public string? SetupAnim { get; init; }
 
-    /// <summary>The clip ANIM whose channels override the setup over time.</summary>
-    public string? ClipAnim { get; init; }
+    /// <summary>
+    /// The clip ANIMs whose channels override the setup over time, in the order
+    /// they were asked for.
+    /// </summary>
+    /// <remarks>
+    /// Several are only meaningful with <see cref="Animate"/>, where each becomes
+    /// its own animation in the file and its own Action in Blender. Everything
+    /// that samples a single moment — a <see cref="Time"/> pose, the facial
+    /// layers — reads one, because a moment cannot belong to two timelines.
+    /// </remarks>
+    public ImmutableArray<string> ClipAnims { get; init; } = [];
+
+    /// <summary>The first clip, which is the only one the single-pose paths use.</summary>
+    public string? ClipAnim => ClipAnims.IsDefaultOrEmpty ? null : ClipAnims[0];
 
     /// <summary>Emit the clip as native glTF animation rather than a single sampled pose.</summary>
     public bool Animate { get; init; }
+
+    /// <summary>
+    /// Keep several clips as one animation each, rather than playing them in
+    /// order down a single timeline.
+    /// </summary>
+    /// <remarks>
+    /// Queueing is the default because it is the one that does something visible
+    /// when a viewer presses play. Several separate animations arrive in Blender
+    /// as NLA tracks stashed across every animated object, so seeing the second
+    /// one means muting the first across the whole selection — accurate, and
+    /// unusable as a way of checking an export.
+    /// <para>
+    /// Separate animations remain the right shape for someone building with
+    /// them rather than looking at them, which is why this exists at all.
+    /// </para>
+    /// </remarks>
+    public bool SeparateAnimations { get; init; }
 
     /// <summary>The time in seconds to sample a single pose at; nonzero needs a setup.</summary>
     public double Time { get; init; }
@@ -121,6 +231,22 @@ public sealed record ExportRequest
     public string? SdfRoot { get; init; }
 
     /// <summary>
+    /// Read the inputs straight from the archives, naming them by their archive
+    /// paths rather than by files on disk.
+    /// </summary>
+    /// <remarks>
+    /// Export used to require its inputs as files, so asking for a model meant
+    /// first writing the game's own files somewhere — which is not what someone
+    /// who wanted a GLB asked for. Textures were always resolved from the
+    /// archives directly; this puts the geometry, materials and animation on the
+    /// same footing, and the only thing the export writes is the export.
+    /// <para>
+    /// Extracting remains its own operation, for when the files are the point.
+    /// </para>
+    /// </remarks>
+    public bool ReadFromArchives { get; init; }
+
+    /// <summary>
     /// Checks the rules between the fields, and returns the request unchanged
     /// when it satisfies them.
     /// </summary>
@@ -151,6 +277,66 @@ public sealed record ExportRequest
         if (request.Animate && request.Time != 0.0)
         {
             return Refusal.Unsupported("--animate emits the whole clip, so it cannot be combined with a nonzero --time.");
+        }
+
+        // Several clips are several animations in one file. Anything that samples
+        // one moment cannot say which of them the moment belongs to, so rather
+        // than pick one quietly, those combinations are refused.
+        // Everything below is about --with, which draws several models into one
+        // file.
+        if (!request.With.IsDefaultOrEmpty)
+        {
+            foreach (WornModel worn in request.With)
+            {
+                if (string.IsNullOrWhiteSpace(worn.Path))
+                {
+                    return Refusal.Unsupported("--with names a model to draw alongside this one, and cannot be empty.");
+                }
+            }
+
+            // The merge refuses a posed model beside an unposed one, because one
+            // would be placed and the other piled at the origin. Requiring the
+            // setup here says so before any file is read, rather than after.
+            if (request.SetupAnim is null)
+            {
+                return Refusal.Unsupported(
+                    "--with draws another model into this one's pose, so it needs --setup-anim.");
+            }
+
+        }
+
+        if (request.ClipAnims.Length > 1 && !request.Animate)
+        {
+            return Refusal.Unsupported(
+                "Several --clip-anim files become several animations in one file, which needs --animate. Without it only one pose is sampled, so name a single clip.");
+        }
+
+        if (request.ClipAnims.Length > 1 && (request.MouthAnim is not null || request.EyesAnim is not null))
+        {
+            return Refusal.Unsupported(
+                "A facial atlas is composed over one animation's timeline, so it cannot be combined with several --clip-anim files.");
+        }
+
+        if (request.ClipAnims.Length > 1 && request.BlinkAt.Length > 0)
+        {
+            return Refusal.Unsupported(
+                "--blink-at names moments in one animation, so it cannot be combined with several --clip-anim files.");
+        }
+
+        // A borrowed part is placed at the donor's world transform rather than
+        // parented into the setup's tree, so it cannot follow an animation. The
+        // export would run and leave the head standing still while the body
+        // walked away, which reads as a fault rather than as a limit.
+        if (request.GapAnim is not null && request.Animate)
+        {
+            return Refusal.Unsupported(
+                "--gap-anim places the parts the setup cannot name rather than attaching them, so they cannot follow an animation. Export a still, or leave --gap-anim out.");
+        }
+
+        if (request.GapAnim is not null && request.SetupAnim is null)
+        {
+            return Refusal.Unsupported(
+                "--gap-anim fills what a setup hierarchy cannot name, so it needs --setup-anim.");
         }
 
         // A blink is an explicit event injected into an animation on the eye atlas.

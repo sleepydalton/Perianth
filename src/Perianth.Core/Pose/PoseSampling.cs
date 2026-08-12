@@ -28,7 +28,23 @@ internal static class PoseSampling
     internal readonly record struct Association(int[] NodeOfPart, ImmutableArray<string> Unrigged);
 
     /// <summary>Binds each part to the setup node its binding name equals exactly.</summary>
-    internal static Result<Association> Associate(GeometryModel model, AnimFile setup)
+    /// <param name="model">The geometry whose parts are being bound.</param>
+    /// <param name="setup">The hierarchy to bind them to.</param>
+    /// <param name="allowMissingParts">
+    /// Proceed even where the hierarchy accounts for too little of the model.
+    /// <para>
+    /// The default refusal is right: a setup that names a tenth of a model is
+    /// not that model's, and posing with it produces a plausible, wrong export.
+    /// But 29 of the game's 918 characters have no setup at all, and for those
+    /// the nearest relative's hierarchy is the only one there is — one such
+    /// model is posed by a sibling's at 12.8% unnamed, just past the limit.
+    /// Those parts are omitted and reported by name, as
+    /// unrigged parts always are, so what is lost is stated rather than hidden.
+    /// This is never inferred: a caller has to ask.
+    /// </para>
+    /// </param>
+    internal static Result<Association> Associate(
+        GeometryModel model, AnimFile setup, bool allowMissingParts = false)
     {
         int[] nodeOfPart = new int[model.Parts.Length];
         List<string> unrigged = [];
@@ -41,7 +57,7 @@ internal static class PoseSampling
             }
         }
 
-        if (unrigged.Count > model.Parts.Length * UnriggedShareLimit)
+        if (!allowMissingParts && unrigged.Count > model.Parts.Length * UnriggedShareLimit)
         {
             return Refusal.Unsupported(string.Create(
                 CultureInfo.InvariantCulture,
@@ -333,7 +349,9 @@ internal static class PoseSampling
 
             // A clip that names a visibility node states that node's state, even
             // at 0xFFFF: channel presence, not a request to inherit the setup.
-            if (clip is not null && clip.TryGetNode(setup.Names[node], out int clipNode))
+            // Unless the clip states nothing anywhere, which is an overlay rather
+            // than an appearance -- see AnimFile.SelectsVisibility.
+            if (clip is not null && clip.SelectsVisibility && clip.TryGetNode(setup.Names[node], out int clipNode))
             {
                 source[node] = clip;
                 sourceNode[node] = clipNode;
@@ -378,7 +396,12 @@ internal static class PoseSampling
                 double at = positions[node];
                 if (source[node] == setup || source[node] == clip)
                 {
-                    Result<double> position = source[node].SamplePosition(seconds);
+                    // Clamped for the same reason as the transform path: the
+                    // source here may be the shorter setup, not the clip whose
+                    // timeline is being walked.
+                    Result<double> position = source[node] == clip
+                        ? source[node].SamplePosition(seconds)
+                        : source[node].ClampedSamplePosition(seconds);
                     if (!position.TryGetValue(out at, out Refusal? positionRefusal))
                     {
                         return positionRefusal;
@@ -588,43 +611,68 @@ internal static class PoseSampling
         AnimVec3[] initial = new AnimVec3[keep.Length];
         for (int attachment = 0; attachment < keep.Length; attachment++)
         {
-            int node = nodeOfPart[keep[attachment]];
-            AnimVec3 first = visible[0][node] ? AnimVec3.One : AnimVec3.Zero;
-            initial[attachment] = first;
+            initial[attachment] = visible[0][nodeOfPart[keep[attachment]]] ? AnimVec3.One : AnimVec3.Zero;
+        }
 
-            bool changes = false;
-            for (int sample = 1; sample < visible.Length; sample++)
+        VisibilityTracks(keep, nodeOfPart, visible, setupCount, initial, tracks);
+        return initial;
+    }
+
+    /// <summary>
+    /// Adds a stepped scale track for every kept part whose visibility under this
+    /// animation is not already what the scene graph bakes in.
+    /// </summary>
+    /// <remarks>
+    /// Splitting this out is what lets several animations share one scene. The
+    /// graph can only bake one arrangement — the first animation's — so a second
+    /// animation that shows a different set of parts has to say so in its own
+    /// tracks, even where its visibility never changes within itself. Hence the
+    /// test is "differs from <paramref name="initial"/> at any sample", which for
+    /// the first animation reduces to the old "changes over its own length" and
+    /// so leaves a single-animation export byte for byte as it was.
+    /// </remarks>
+    internal static void VisibilityTracks(
+        ImmutableArray<int> keep, int[] nodeOfPart, bool[][] visible, int setupCount,
+        AnimVec3[] initial, List<AnimationTrack> tracks)
+    {
+        for (int attachment = 0; attachment < keep.Length; attachment++)
+        {
+            int node = nodeOfPart[keep[attachment]];
+            bool baked = initial[attachment].X != 0.0;
+
+            bool differs = false;
+            for (int sample = 0; sample < visible.Length; sample++)
             {
-                if (visible[sample][node] != visible[0][node])
+                if (visible[sample][node] != baked)
                 {
-                    changes = true;
+                    differs = true;
                     break;
                 }
             }
 
-            if (changes)
+            if (!differs)
             {
-                ImmutableArray<double>.Builder values = ImmutableArray.CreateBuilder<double>(visible.Length * 3);
-                for (int sample = 0; sample < visible.Length; sample++)
-                {
-                    double s = visible[sample][node] ? 1.0 : 0.0;
-                    values.Add(s);
-                    values.Add(s);
-                    values.Add(s);
-                }
-
-                tracks.Add(new AnimationTrack(setupCount + attachment, TrackPath.Scale, TrackInterpolation.Step, values.MoveToImmutable()));
+                continue;
             }
-        }
 
-        return initial;
+            ImmutableArray<double>.Builder values = ImmutableArray.CreateBuilder<double>(visible.Length * 3);
+            for (int sample = 0; sample < visible.Length; sample++)
+            {
+                double s = visible[sample][node] ? 1.0 : 0.0;
+                values.Add(s);
+                values.Add(s);
+                values.Add(s);
+            }
+
+            tracks.Add(new AnimationTrack(setupCount + attachment, TrackPath.Scale, TrackInterpolation.Step, values.MoveToImmutable()));
+        }
     }
 
     /// <summary>The clip's per-sample times as float32, refusing if two collide.</summary>
     internal static Result<ImmutableArray<float>> SampleTimes(AnimFile clip)
     {
-        ImmutableArray<float>.Builder times = ImmutableArray.CreateBuilder<float>(clip.SampleCount);
-        for (int sample = 0; sample < clip.SampleCount; sample++)
+        ImmutableArray<float>.Builder times = ImmutableArray.CreateBuilder<float>(clip.PlayableSamples);
+        for (int sample = 0; sample < clip.PlayableSamples; sample++)
         {
             // Double throughout: dividing by the float fps loses precision and can
             // push the last sample a hair past the end when multiplied back.
@@ -704,7 +752,14 @@ internal static class PoseSampling
             return Result.Ok(0.0);
         }
 
-        return ReferenceEquals(source, sampleSource) ? Result.Ok(samplePosition) : source.SamplePosition(seconds);
+        // A companion track — the setup read alongside the clip whose timeline is
+        // being walked — holds its last sample rather than refusing past its end.
+        // A setup is a rest pose and is routinely far shorter than the clip played
+        // against it, so refusing here rejected most of a character's animations
+        // for a reason that had nothing to do with what was asked.
+        return ReferenceEquals(source, sampleSource)
+            ? Result.Ok(samplePosition)
+            : source.ClampedSamplePosition(seconds);
     }
 
     private static Result<bool> Compose(
@@ -776,19 +831,19 @@ internal static class PoseSampling
     private static bool IsFinite(AnimQuat q) =>
         double.IsFinite(q.X) && double.IsFinite(q.Y) && double.IsFinite(q.Z) && double.IsFinite(q.W);
 
-    private static AnimQuat QMultiply(AnimQuat a, AnimQuat b) => new(
+    internal static AnimQuat QMultiply(AnimQuat a, AnimQuat b) => new(
         (a.W * b.X) + (a.X * b.W) + (a.Y * b.Z) - (a.Z * b.Y),
         (a.W * b.Y) - (a.X * b.Z) + (a.Y * b.W) + (a.Z * b.X),
         (a.W * b.Z) + (a.X * b.Y) - (a.Y * b.X) + (a.Z * b.W),
         (a.W * b.W) - (a.X * b.X) - (a.Y * b.Y) - (a.Z * b.Z));
 
-    private static AnimQuat QNormalize(AnimQuat q)
+    internal static AnimQuat QNormalize(AnimQuat q)
     {
         double length = Math.Sqrt((q.X * q.X) + (q.Y * q.Y) + (q.Z * q.Z) + (q.W * q.W));
         return length == 0.0 ? new AnimQuat(0, 0, 0, 0) : new AnimQuat(q.X / length, q.Y / length, q.Z / length, q.W / length);
     }
 
-    private static AnimVec3 Rotate(AnimQuat q, AnimVec3 v)
+    internal static AnimVec3 Rotate(AnimQuat q, AnimVec3 v)
     {
         AnimQuat result = QMultiply(QMultiply(q, new AnimQuat(v.X, v.Y, v.Z, 0.0)), new AnimQuat(-q.X, -q.Y, -q.Z, q.W));
         return new AnimVec3(result.X, result.Y, result.Z);

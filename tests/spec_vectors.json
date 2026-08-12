@@ -123,7 +123,7 @@
     },
 
     "visibility_sentinels": {
-      "description": "Selector sentinels decide visibility, and a clip that omits a node does not overwrite the setup value.",
+      "description": "Selector sentinels decide visibility, and a clip that omits a node does not overwrite the setup value. A clip whose whole SCAI stream is 0xFFFF states nothing at all and overwrites none of it.",
       "scenarios": [
         {
           "name": "hidden parent hides a locally active child",
@@ -132,15 +132,21 @@
           "visible": { "parent": false, "child": false }
         },
         {
-          "name": "a clip containing the parent with SCAI 0xFFFF reveals both",
-          "setup": { "parent": 65534, "child": 65535 },
-          "clip": { "parent": 65535 },
-          "visible": { "parent": true, "child": true }
+          "name": "a clip that states something and gives the parent SCAI 0xFFFF reveals both",
+          "setup": { "parent": 65534, "child": 65535, "other": 65535 },
+          "clip": { "parent": 65535, "other": 65534 },
+          "visible": { "parent": true, "child": true, "other": false }
         },
         {
           "name": "a clip omitting the parent retains the hidden setup value",
           "setup": { "parent": 65534, "child": 65535 },
           "clip": {},
+          "visible": { "parent": false, "child": false }
+        },
+        {
+          "name": "a clip whose whole stream is 0xFFFF states nothing, so the setup stands",
+          "setup": { "parent": 65534, "child": 65535 },
+          "clip": { "parent": 65535, "child": 65535 },
           "visible": { "parent": false, "child": false }
         }
       ]

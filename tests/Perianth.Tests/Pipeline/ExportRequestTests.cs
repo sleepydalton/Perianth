@@ -106,4 +106,45 @@ public sealed class ExportRequestTests
         Assert.True(validated.IsRefused);
         Assert.Contains("--content-root", validated.Refusal.Message, System.StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Drawing_another_model_alongside_needs_a_pose_to_draw_it_into()
+    {
+        // The merge refuses a posed model beside an unposed one, because one is
+        // placed and the other piled at the origin. Saying so here means it is
+        // said before any file is opened.
+        Result<ExportRequest> validated = ExportRequest.Validate(
+            Minimal() with { With = [new WornModel("equipment.mmb")] });
+
+        Assert.True(validated.IsRefused);
+        Assert.Contains("--setup-anim", validated.Refusal.Message, System.StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Drawing_another_model_alongside_an_animation_is_allowed()
+    {
+        // It was refused: an animation drove only the first model's copy of the
+        // hierarchy, so a character would move and its clothes would stand
+        // still. The merge now shares those tracks with every model built from
+        // the same setup, which is every model this flag is for.
+        Result<ExportRequest> validated = ExportRequest.Validate(
+            Minimal() with
+            {
+                SetupAnim = "setup.anim",
+                ClipAnims = ["walk.anim"],
+                Animate = true,
+                With = [new WornModel("equipment.mmb")],
+            });
+
+        Assert.True(validated.IsSuccess, validated.IsSuccess ? "" : validated.Refusal.Message);
+    }
+
+    [Fact]
+    public void Drawing_another_model_alongside_a_pose_is_allowed()
+    {
+        Result<ExportRequest> validated = ExportRequest.Validate(
+            Minimal() with { SetupAnim = "setup.anim", With = [new WornModel("equipment.mmb")] });
+
+        Assert.True(validated.IsSuccess, validated.IsSuccess ? "" : validated.Refusal.Message);
+    }
 }

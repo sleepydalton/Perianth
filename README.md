@@ -1,6 +1,6 @@
 # Perianth
 
-A **unofficial** asset tool for *South Park: The Fractured But Whole*. It allows for interoperability with the game's file formats for assets by allowing them to be converted into .glb files.
+An **unofficial** asset tool for *South Park: The Fractured But Whole*. It allows for interoperability with the game's file formats for assets by allowing them to be converted into .glb files.
 
 Perianth reads the game's model, material, animation, lip-sync, texture and
 archive formats. It can turn a character into a Blender-compatible GLB, edit a
@@ -81,6 +81,8 @@ archives. From there:
 - **Patches** makes a shareable patch out of a mod folder, or applies patches
   somebody sent you.
 
+The friction this removes is *finding the files*. Nothing in a character's own
+files tells you which animation poses it, so the window works that out.
 
 ### Posing, and why an export can look broken
 
@@ -163,8 +165,14 @@ part sharing that texture becomes one colour, which on a character flattens the
 line work into a silhouette.
 
 **Put a texture on one part only.** Export the model to GLB, open it in
-Blender, and click the part — its mesh is named `mode3-record-47`. That number
-is what to name:
+Blender, and click the part. Its **mesh** is named `mode2-record-47` or
+`mode3-record-47`, and that number is what to name.
+
+Read it from **Object Data Properties** — the green triangle tab — and not from
+the object's own name. A posed export names each object after the character's
+authored skeleton, so you will see something like `head2_vis|spPlanar48` in the
+outliner while the mesh underneath it carries the number. In an unposed export
+the two agree, which is why the object name looks right until it isn't.
 
 ```console
 perianth material --editordata … --assign camel/.../tex_mine_d.dds --section 47

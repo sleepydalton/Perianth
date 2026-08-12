@@ -184,6 +184,21 @@ public sealed partial class MainWindow : Window
         Patterns = ["*.png", "*.dds"],
     };
 
+    /// <summary>
+    /// Puts one animation at the end of the queue.
+    /// </summary>
+    /// <remarks>
+    /// A click rather than a tick, because the same animation can be queued more
+    /// than once and a checkbox has no way to say "again".
+    /// </remarks>
+    private void AddClipToQueue(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: ClipChoice choice })
+        {
+            _model.Export.Enqueue(choice);
+        }
+    }
+
     /// <summary>Asks which mod folder to export against.</summary>
     private async void ChooseModFolder(object? sender, RoutedEventArgs e)
     {
@@ -248,6 +263,22 @@ public sealed partial class MainWindow : Window
         if (folder is not null)
         {
             await _model.Browse.OpenAsync(folder).ConfigureAwait(true);
+        }
+    }
+
+    /// <summary>
+    /// Browses a plain folder of loose files instead of the archives.
+    /// </summary>
+    /// <remarks>
+    /// For an extraction this tool wrote, or a mod folder. Both mirror the
+    /// archive's own paths, so everything downstream browses them unchanged.
+    /// </remarks>
+    private async void ChooseLooseFolder(object? sender, RoutedEventArgs e)
+    {
+        string? folder = await AskForFolderAsync("Select a folder of extracted or modified files").ConfigureAwait(true);
+        if (folder is not null)
+        {
+            await _model.Browse.OpenFolderAsync(folder).ConfigureAwait(true);
         }
     }
 

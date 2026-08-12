@@ -66,6 +66,18 @@ public sealed class AnimFile
         Fps = fps;
         SampleCount = sampleCount;
         RotationStride = rotationStride;
+
+        // One pass rather than a scan per sample: visibility is asked for at every
+        // sample of every clip.
+        SelectsVisibility = false;
+        foreach (ushort selector in streams[AnimChannel.Scale])
+        {
+            if (selector != 0xFFFF)
+            {
+                SelectsVisibility = true;
+                break;
+            }
+        }
     }
 
     /// <summary>The animation's frame rate, in samples per second.</summary>
@@ -73,6 +85,35 @@ public sealed class AnimFile
 
     /// <summary>The number of samples the animation declares.</summary>
     public int SampleCount { get; }
+
+    /// <summary>
+    /// The samples that are a pose. The declared count includes one more, and it is
+    /// not one: a channel keyed on that final sample carries the node's rest value
+    /// rather than the end of its motion, so playing it throws whatever it names
+    /// back to where the setup parks it. Measured over two characters' clips, every
+    /// channel that snaps on the last sample — 33 of 33 — snaps to exactly the rest
+    /// pose and to nothing else, while the rest simply hold. Since a hand parks far
+    /// from the body, the visible cost was a hand across the room on the last frame
+    /// of a clip, held for every frame after it in a queued export.
+    /// </summary>
+    public int PlayableSamples => SampleCount > 1 ? SampleCount - 1 : SampleCount;
+
+    /// <summary>
+    /// Whether the scale stream states anything at all. Every selector being
+    /// <c>0xFFFF</c> is the empty stream, not a request to show everything: the
+    /// file records no scale state for any node, so it selects nothing.
+    /// </summary>
+    /// <remarks>
+    /// It matters because a node a clip names takes that clip's selector, and
+    /// <c>0xFFFF</c> reveals. The files with an empty stream are overlays — they
+    /// pose one joint, or a handful, and are meant to be layered over a base
+    /// animation — yet they name much of the rig, so playing one alone turns on
+    /// every alternate part at once. Censused over 1,481 clips from nine
+    /// characters, 26 have an empty scale stream, and deferring to the setup for
+    /// those changes the visible set of 15, each to exactly the count the setup
+    /// itself shows. The other 1,455 are untouched.
+    /// </remarks>
+    public bool SelectsVisibility { get; }
 
     /// <summary>Bytes per packed rotation entry, chosen by the header codec selector.</summary>
     public int RotationStride { get; }
@@ -120,7 +161,29 @@ public sealed class AnimFile
     /// intact and a different time works. Only an invalid sampling rate is a fault
     /// of the file itself.
     /// </remarks>
-    public Result<double> SamplePosition(double seconds)
+    public Result<double> SamplePosition(double seconds) => SamplePosition(seconds, clamp: false);
+
+    /// <summary>
+    /// The same, but holding the last sample instead of refusing past the end.
+    /// </summary>
+    /// <remarks>
+    /// For a <em>companion</em> track only — one being read alongside the file
+    /// whose timeline is being walked, rather than one the user named a time in.
+    /// A setup ANIM is a rest pose and is routinely far shorter than the clip
+    /// played against it — three samples, an eighth of a second, against clips
+    /// of four seconds and more. Refusing there rejects the export of most
+    /// animations for a reason that has nothing to do with what was asked.
+    /// <para>
+    /// Holding the last sample is the answer because a rest pose has no further
+    /// motion to give; it is not a guess about missing data. The distinction
+    /// that must survive is the other case — a static <c>--time</c> past the end
+    /// of the file the user actually named — which stays a refusal, because
+    /// there the request is for a moment that does not exist.
+    /// </para>
+    /// </remarks>
+    public Result<double> ClampedSamplePosition(double seconds) => SamplePosition(seconds, clamp: true);
+
+    private Result<double> SamplePosition(double seconds, bool clamp)
     {
         if (!double.IsFinite(seconds) || seconds < 0.0)
         {
@@ -144,7 +207,7 @@ public sealed class AnimFile
 
         double position = seconds * Fps;
         int lastSample = SampleCount - 1;
-        if (position > lastSample + 1.0e-9)
+        if (!clamp && position > lastSample + 1.0e-9)
         {
             return Refusal.Unsupported(string.Create(
                 CultureInfo.InvariantCulture,
@@ -440,7 +503,24 @@ public sealed class AnimFile
                 CultureInfo.InvariantCulture, $"ANIM {streamTag} sample {sample} is out of range."));
         }
 
-        int start = ((selector * samplesPerChannel) + sample) * stride;
+        // Sample-major: every channel at frame 0, then every channel at frame 1.
+        // The reference reads this channel-major — every frame of channel 0,
+        // then every frame of channel 1 — and this build did too, faithfully,
+        // because it was ported rather than re-derived.
+        //
+        // Nothing in the file says which it is, so it was settled by what the
+        // two readings produce. Animation is smooth, and a wrong reading
+        // scrambles it, so the orderings can be told apart without any ground
+        // truth: decode the same bytes both ways and measure how far each
+        // channel travels. Over 9,610 ANIM files across two corpora, every one
+        // of the 30 flat payloads — rotation, translation and scale alike — is
+        // smoother read sample-major, none channel-major, by a median factor of
+        // 8.6x for rotation and 93x for translation.
+        //
+        // On the case this was reported against it is the difference between
+        // 44,934 degrees of joint travel and 2,436: a character flailing rather
+        // than moving. See Roadmap §10.5.
+        int start = ((sample * animatedCount) + selector) * stride;
         return Result.Ok(data.Slice(flatStart + start, stride).ToArray());
     }
 

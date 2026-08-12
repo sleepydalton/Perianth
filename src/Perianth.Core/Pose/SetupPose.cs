@@ -30,7 +30,8 @@ public sealed record PosedScene(
 /// Each part binds to the setup node whose name equals its hierarchy binding
 /// name exactly. A part the hierarchy does not name is omitted and reported; if
 /// more than a tenth of the parts are unnamed the setup is not this model's and
-/// the whole export refuses. Visibility is the proven SCAI rule, evaluated at the
+/// the whole export refuses, unless the caller has explicitly asked to proceed
+/// with a borrowed hierarchy. Visibility is the proven SCAI rule, evaluated at the
 /// resting sample; the world composition is computed only to reject a hierarchy
 /// that produces a degenerate placement, since the GLB stores local transforms.
 /// </remarks>
@@ -47,12 +48,15 @@ public static class SetupPose
     /// sampled — a still, not an animation. A time past the end of the sampled
     /// ANIM refuses as unsupported: the file is intact and another time works.
     /// </remarks>
-    public static Result<PosedScene> Pose(GeometryModel model, AnimFile setup, AnimFile? clip, double seconds)
+    public static Result<PosedScene> Pose(
+        GeometryModel model, AnimFile setup, AnimFile? clip, double seconds,
+        bool allowMissingParts = false)
     {
         System.ArgumentNullException.ThrowIfNull(model);
         System.ArgumentNullException.ThrowIfNull(setup);
 
-        Result<PoseSampling.Association> association = PoseSampling.Associate(model, setup);
+        Result<PoseSampling.Association> association =
+            PoseSampling.Associate(model, setup, allowMissingParts);
         if (!association.TryGetValue(out PoseSampling.Association bindings, out Refusal? associateRefusal))
         {
             return associateRefusal;
@@ -95,7 +99,9 @@ public static class SetupPose
 
         if (kept.Length == 0)
         {
-            return Refusal.Unsupported("The setup hierarchy and visibility select no mesh parts.");
+            return Refusal.Unsupported(
+                "The setup hierarchy and visibility select no mesh parts.",
+                DiagnosticIds.PoseSelectsNothing);
         }
 
         // A static pose draws every kept mesh, so each attachment stands at full

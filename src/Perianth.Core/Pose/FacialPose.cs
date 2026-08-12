@@ -23,7 +23,8 @@ public static class FacialPose
     /// <paramref name="seconds"/>, overlaying <paramref name="layers"/>.
     /// </summary>
     public static Result<PosedScene> Pose(
-        GeometryModel model, AnimFile setup, AnimFile? clip, double seconds, ImmutableArray<FacialLayer> layers)
+        GeometryModel model, AnimFile setup, AnimFile? clip, double seconds, ImmutableArray<FacialLayer> layers,
+        bool allowMissingParts = false)
     {
         System.ArgumentNullException.ThrowIfNull(model);
         System.ArgumentNullException.ThrowIfNull(setup);
@@ -34,7 +35,8 @@ public static class FacialPose
             return validated.Refusal;
         }
 
-        Result<PoseSampling.Association> association = PoseSampling.Associate(model, setup);
+        Result<PoseSampling.Association> association =
+            PoseSampling.Associate(model, setup, allowMissingParts);
         if (!association.TryGetValue(out PoseSampling.Association bindings, out Refusal? associateRefusal))
         {
             return associateRefusal;

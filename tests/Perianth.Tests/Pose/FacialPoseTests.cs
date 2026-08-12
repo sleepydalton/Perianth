@@ -193,7 +193,7 @@ public sealed class FacialPoseTests : IDisposable
         SceneNode jaw = scene.Scene.Graph.Nodes.Single(n => n.Name == "jaw");
         Assert.Equal(64.0, jaw.Translation.X, 9);
 
-        System.Collections.Generic.HashSet<int> tracked = [.. scene.Animation.Tracks.Select(t => t.Node)];
+        System.Collections.Generic.HashSet<int> tracked = [.. scene.Animations[0].Tracks.Select(t => t.Node)];
         Assert.Contains(1, tracked);        // "a" moves
         Assert.DoesNotContain(2, tracked);  // "b" is constant
         Assert.DoesNotContain(3, tracked);  // "jaw" overlay is constant
@@ -287,8 +287,9 @@ public sealed class FacialPoseTests : IDisposable
     [Fact]
     public void An_off_grid_blink_boundary_enters_the_animation_timeline()
     {
-        // The clip supplies eight sample times; an in-range blink off the 1/30 grid
-        // adds its two boundaries, so the timeline grows by two.
+        // The clip declares eight samples, of which seven play — the last is a
+        // terminator, not a frame — and an in-range blink off the 1/30 grid adds
+        // its two boundaries, so the timeline grows by two.
         AnimFile setup = Setup(names: ["root", "body", "eye"], parents: [Root, 0, 0], scai: [Active, Active, Active]);
         AnimFile clip = ChangingClip();
         AnimFile eyes = EyeAtlas();
@@ -297,7 +298,7 @@ public sealed class FacialPoseTests : IDisposable
         FacialLayer blink = FacialLayer.Blink(eyes, [0.11], defaultSample: null).Value;
         AnimatedScene scene = FacialAnimation.Animate(model, setup, clip, [blink]).Value;
 
-        Assert.Equal(10, scene.Animation.Times.Length);
+        Assert.Equal(9, scene.Animations[0].Times.Length);
     }
 
     // --- fixtures ------------------------------------------------------------

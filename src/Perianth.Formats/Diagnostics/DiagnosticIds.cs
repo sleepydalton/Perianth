@@ -91,4 +91,47 @@ public static class DiagnosticIds
     /// overwhelmingly a first attempt rather than a choice.
     /// </summary>
     public const string TextureMipsDropped = "texture_mips_dropped";
+
+    /// <summary>
+    /// The chosen animation has a duration but no movement: every channel holds
+    /// one value for its whole length. 632 of the game's 9,469 ANIMs are
+    /// authored this way — prop states such as opened or destroyed, idles, and
+    /// loops that hold while something else moves — so this is a routine
+    /// outcome rather than a broken file, and the animation still chooses a
+    /// pose worth exporting.
+    /// <para>
+    /// It carries an identifier because the remedy is to ask for the same
+    /// export without animation, and each front end spells that differently:
+    /// the window has a "Play the whole clip" checkbox, the command line has
+    /// <c>--animate</c>. Naming either one in the shared message would put the
+    /// wrong instruction in front of half the users.
+    /// </para>
+    /// </summary>
+    public const string ClipHasNoMotion = "clip_has_no_motion";
+
+    /// <summary>
+    /// A hierarchy names this model's parts and its visibility shows none of
+    /// them.
+    /// </summary>
+    /// <remarks>
+    /// Ordinary for equipment rather than a fault. A character's setup names
+    /// every alternative piece and hides them all — 294 of the game's 1,196
+    /// equipment models come out this way — because a pose has to choose one and
+    /// the choice is made elsewhere. It carries an identifier so a caller
+    /// drawing several models can leave that one out and say so, instead of
+    /// failing an export over a piece somebody merely ticked.
+    /// </remarks>
+    public const string PoseSelectsNothing = "pose_selects_nothing";
+
+    /// <summary>
+    /// A material edit named something no section binds.
+    /// </summary>
+    /// <remarks>
+    /// A refusal, because an edit that quietly changed nothing would write a
+    /// mod indistinguishable from a working one. It carries an id because one
+    /// caller legitimately expects it: applying an item's own colour to each of
+    /// a hairstyle's six variants, where a variant need not use every sheet the
+    /// others do. Telling that apart from a mistyped path is the whole point.
+    /// </remarks>
+    public const string MaterialEditMatchedNothing = "material_edit_matched_nothing";
 }

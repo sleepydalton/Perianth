@@ -174,75 +174,76 @@ public static class ExportPipeline
 
     public static Result<ExportOutcome> Run(ExportRequest arguments)
     {
-        Result<SourceFile> mmbFile = SourceFileReader.Read(arguments.Mmb);
-        if (!mmbFile.IsSuccess)
+        // One resolver for the whole run when the inputs live in the archives.
+        // Held open across the export so the container is opened once rather
+        // than per file, and disposed with everything else at the end.
+        using ContentSources? inputs = arguments.ReadFromArchives
+            ? new ContentSources(arguments.ContentRoot, arguments.SdfRoot)
+            : null;
+
+        Result<BuiltScene> first = BuildScene(arguments, inputs);
+        if (!first.TryGetValue(out BuiltScene built, out Refusal? buildRefusal))
         {
-            return mmbFile.Refusal;
+            return buildRefusal;
         }
 
-        Result<MmbModel> model = MmbReader.Read(mmbFile.Value);
-        if (!model.IsSuccess)
+        // What the character wears, each posed by the same hierarchy and built
+        // exactly as the character was. Their diagnostics are kept per model:
+        // a disclosure names editordata sections, and a section number belongs
+        // to one model's file.
+        List<BuiltScene> scenes = [built];
+        List<string> unworn = [];
+        foreach (WornModel worn in arguments.With.IsDefaultOrEmpty ? [] : arguments.With)
         {
-            return model.Refusal;
+            Result<BuiltScene> piece = BuildScene(Alongside(arguments, worn.Path), inputs);
+            if (!piece.TryGetValue(out BuiltScene builtPiece, out Refusal? pieceRefusal))
+            {
+                // A piece the pose hides is left out and named, not fatal. A
+                // character's setup names every alternative and hides them all,
+                // so 294 of the 1,196 equipment models come out this way -- and
+                // failing the whole export over one ticked box would be a
+                // refusal about the wrong thing.
+                if (string.Equals(pieceRefusal.DiagnosticId, DiagnosticIds.PoseSelectsNothing, System.StringComparison.Ordinal))
+                {
+                    unworn.Add(Path.GetFileNameWithoutExtension(worn.Path));
+                    continue;
+                }
+
+                return pieceRefusal;
+            }
+
+            // Whether it is worn instead of the body or on top of it. The
+            // merge cannot tell from the geometry, and guessing takes a head
+            // off when the answer is wrong.
+            scenes.Add(builtPiece with { Scene = builtPiece.Scene with { Replaces = worn.Replaces } });
         }
 
-        Result<SourceFile> cameldataFile = SourceFileReader.Read(arguments.Cameldata);
-        if (!cameldataFile.IsSuccess)
+        Result<ExportScene> combined = SceneMerge.Merge([.. scenes.Select(s => s.Scene)]);
+        if (!combined.TryGetValue(out ExportScene scene, out Refusal? mergeRefusal))
         {
-            return cameldataFile.Refusal;
+            return mergeRefusal;
         }
 
-        Result<CameldataFile> cameldata = CameldataReader.Read(cameldataFile.Value);
-        if (!cameldata.IsSuccess)
+        GeometryModel drawn = scene.Model;
+        SceneGraph? graph = scene.Graph;
+        PoseResult posed = built.Pose;
+        ImmutableArray<Animation> animations = scene.Animations.IsDefault ? [] : scene.Animations;
+
+        if (arguments.PruneEmptyNodes && graph is not null)
         {
-            return cameldata.Refusal;
+            (graph, animations) = graph.Prune(animations);
         }
-
-        Result<GeometryModel> geometry = GeometryAssembler.Assemble(model.Value, cameldata.Value);
-        if (!geometry.IsSuccess)
-        {
-            return geometry.Refusal;
-        }
-
-        // The pose comes before materials: the reference dresses only the parts a
-        // setup hierarchy places and its visibility selects, so a hidden part is
-        // never reconstructed and never reported. Without a setup the posed model
-        // is the whole part list.
-        Result<PoseResult> pose = ApplyPose(arguments, geometry.Value);
-        if (!pose.TryGetValue(out PoseResult posed, out Refusal? poseRefusal))
-        {
-            return poseRefusal;
-        }
-
-        Result<MaterialSet> materials = AssembleMaterials(arguments, posed.PosedModel, geometry.Value.Parts.Length);
-        if (!materials.IsSuccess)
-        {
-            return materials.Refusal;
-        }
-
-        // A tile bake consumes myUVRepeat into the pixels and rewrites the UV0 of
-        // the parts that carry it, applied before any part is dropped so the keys
-        // line up.
-        GeometryModel remapped = ApplyUv0Remaps(posed.PosedModel, materials.Value.Uv0Remaps);
-
-        // Emissive companions merge onto a base and their geometry is dropped, as
-        // is any part whose bake exceeded the size cap; the surviving-parts view is
-        // what ships. Their attachment nodes stay in the hierarchy without a mesh.
-        ImmutableArray<int> kept = arguments.Editordata is null
-            ? Identity(posed.PosedModel.Parts.Length)
-            : materials.Value.SurvivingParts;
-        GeometryModel drawn = remapped.SelectParts(kept);
-        SceneGraph? graph = posed.Graph?.RemapMeshes(kept, posed.PosedModel.Parts.Length);
 
         Result<byte[]> glb = GlbWriter.Write(
             drawn,
-            materials.Value,
+            scene.Materials,
             new GlbWriteOptions
             {
                 IncludePresentationBasis = !arguments.SourceSpace,
                 SceneName = graph is null ? GlbNames.UnposedScene : GlbNames.PosedScene,
                 SceneGraph = graph,
-                Animation = posed.Animation,
+                // The merged set, so what the character wears moves with it.
+                Animations = animations,
             });
         if (!glb.IsSuccess)
         {
@@ -251,7 +252,7 @@ public static class ExportPipeline
 
         // The audio sidecar is resolved and decoded before either file is
         // published, so a failed decode leaves both the GLB and the WAV absent.
-        Result<PreparedAudio> audioResult = PrepareAudio(arguments);
+        Result<PreparedAudio> audioResult = PrepareAudio(arguments, inputs);
         if (!audioResult.TryGetValue(out PreparedAudio prepared, out Refusal? audioRefusal))
         {
             return audioRefusal;
@@ -274,9 +275,178 @@ public static class ExportPipeline
 
         return Result.Ok(new ExportOutcome(
             Count(drawn),
-            Diagnose(drawn, materials.Value, graph is not null, posed.UnriggedParts, arguments.MouthAnim is not null),
-            PartialExport: !materials.Value.OversizedOmissions.IsDefaultOrEmpty,
+            Disclose(scenes, arguments, graph is not null, unworn),
+            PartialExport: scenes.Exists(s => !s.Materials.OversizedOmissions.IsDefaultOrEmpty),
             Audio: prepared.Report));
+    }
+
+
+    /// <summary>One model built to the point it could be written on its own.</summary>
+    private readonly record struct BuiltScene(ExportScene Scene, MaterialSet Materials, PoseResult Pose);
+
+    /// <summary>
+    /// Reads, poses and dresses one model, up to the point a writer takes over.
+    /// </summary>
+    /// <remarks>
+    /// Extracted so it can run more than once. Everything a second model needs is
+    /// already here — it is the same sequence with different paths — and the
+    /// alternative was a parallel path that would drift from this one.
+    /// </remarks>
+    private static Result<BuiltScene> BuildScene(ExportRequest arguments, ContentSources? inputs)
+    {
+        Result<SourceFile> mmbFile = Open(arguments.Mmb, inputs);
+        if (!mmbFile.IsSuccess)
+        {
+            return mmbFile.Refusal;
+        }
+
+        Result<MmbModel> model = MmbReader.Read(mmbFile.Value);
+        if (!model.IsSuccess)
+        {
+            return model.Refusal;
+        }
+
+        Result<SourceFile> cameldataFile = Open(arguments.Cameldata, inputs);
+        if (!cameldataFile.IsSuccess)
+        {
+            return cameldataFile.Refusal;
+        }
+
+        Result<CameldataFile> cameldata = CameldataReader.Read(cameldataFile.Value);
+        if (!cameldata.IsSuccess)
+        {
+            return cameldata.Refusal;
+        }
+
+        Result<GeometryModel> geometry = GeometryAssembler.Assemble(model.Value, cameldata.Value);
+        if (!geometry.IsSuccess)
+        {
+            return geometry.Refusal;
+        }
+
+        // The pose comes before materials: the reference dresses only the parts a
+        // setup hierarchy places and its visibility selects, so a hidden part is
+        // never reconstructed and never reported. Without a setup the posed model
+        // is the whole part list.
+        Result<PoseResult> pose = ApplyPose(arguments, geometry.Value, inputs);
+        if (!pose.TryGetValue(out PoseResult posed, out Refusal? poseRefusal))
+        {
+            return poseRefusal;
+        }
+
+        Result<MaterialSet> materials = AssembleMaterials(arguments, posed.PosedModel, geometry.Value.Parts.Length, inputs);
+        if (!materials.IsSuccess)
+        {
+            return materials.Refusal;
+        }
+
+        // A tile bake consumes myUVRepeat into the pixels and rewrites the UV0 of
+        // the parts that carry it, applied before any part is dropped so the keys
+        // line up.
+        GeometryModel remapped = ApplyUv0Remaps(posed.PosedModel, materials.Value.Uv0Remaps);
+
+        // Emissive companions merge onto a base and their geometry is dropped, as
+        // is any part whose bake exceeded the size cap; the surviving-parts view is
+        // what ships. Their attachment nodes stay in the hierarchy without a mesh.
+        ImmutableArray<int> kept = arguments.Editordata is null
+            ? Identity(posed.PosedModel.Parts.Length)
+            : materials.Value.SurvivingParts;
+        GeometryModel drawn = remapped.SelectParts(kept);
+        SceneGraph? graph = posed.Graph?.RemapMeshes(kept, posed.PosedModel.Parts.Length);
+
+        return Result.Ok(new BuiltScene(
+            new ExportScene(drawn, materials.Value, graph, posed.Animations), materials.Value, posed));
+    }
+
+    /// <summary>
+    /// The request for a model drawn alongside the first one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The same pose <b>and the same clip</b>. A clip drives the hierarchy, and
+    /// every model here is posed by that one hierarchy, so a piece given only the
+    /// setup stands in the rest pose while the character stands in the clip's —
+    /// which is a costume that does not fit, at frame one, before anything has
+    /// moved. Measured: with the clip withheld, 46 of 48 shared joints agreed
+    /// and two did not.
+    /// </para>
+    /// <para>
+    /// The facial layers are cleared, and they are a different case: a mouth
+    /// atlas over a pair of trousers is not a thing to reconstruct. They belong
+    /// to the character, where a clip belongs to the pose.
+    /// </para>
+    /// <para>
+    /// The companions are derived from the model's own path rather than named.
+    /// No equipment piece in the archives departs from the shared stem, and three
+    /// paths per piece would be three chances to mismatch them.
+    /// </para>
+    /// </remarks>
+    private static ExportRequest Alongside(ExportRequest arguments, string model) => arguments with
+    {
+        Mmb = model,
+        Cameldata = Path.ChangeExtension(model, ".cameldata"),
+        Editordata = arguments.Editordata is null ? null : Path.ChangeExtension(model, ".editordata"),
+        With = [],
+        MouthAnim = null,
+        MouthState = null,
+        EyesAnim = null,
+        EyeState = null,
+        PupilsAnim = null,
+        PupilState = null,
+        EyebrowsAnim = null,
+        EyebrowState = null,
+        LipsyncDatabase = null,
+        BlinkAt = [],
+    };
+
+    /// <summary>
+    /// Every model's disclosures, each said of the model it belongs to.
+    /// </summary>
+    /// <remarks>
+    /// A disclosure names editordata sections, and a section number means
+    /// something different in each model's file. Pooling them would produce a
+    /// list that reads as one model's and is several.
+    /// </remarks>
+    private static ImmutableArray<Diagnostic> Disclose(
+        List<BuiltScene> scenes, ExportRequest arguments, bool posed, List<string> unworn)
+    {
+        ImmutableArray<Diagnostic>.Builder all = ImmutableArray.CreateBuilder<Diagnostic>();
+
+        if (unworn.Count > 0)
+        {
+            all.Add(new Diagnostic(
+                DiagnosticIds.PoseSelectsNothing,
+                DiagnosticSeverity.Warning,
+                "Left out: " + string.Join(", ", unworn) +
+                ". None of it shows in this pose. Some pieces only appear in the game once they are equipped, " +
+                "and the files do not say which."));
+        }
+
+        for (int i = 0; i < scenes.Count; i++)
+        {
+            BuiltScene scene = scenes[i];
+            ImmutableArray<Diagnostic> mine = Diagnose(
+                scene.Scene.Model,
+                scene.Materials,
+                posed,
+                scene.Pose.UnriggedParts,
+                i == 0 && arguments.MouthAnim is not null,
+                i == 0 && arguments.Animate && scene.Pose.Animations.IsEmpty);
+
+            if (i == 0)
+            {
+                all.AddRange(mine);
+                continue;
+            }
+
+            string name = Path.GetFileNameWithoutExtension(arguments.With[i - 1].Path);
+            foreach (Diagnostic diagnostic in mine)
+            {
+                all.Add(diagnostic with { Message = name + ": " + diagnostic.Message });
+            }
+        }
+
+        return all.ToImmutable();
     }
 
     /// <summary>The audio report a caller sees, paired with the WAV bytes to publish.</summary>
@@ -286,7 +456,7 @@ public static class ExportPipeline
     /// Resolves and decodes the speech WEM into a report and its bytes, or nothing
     /// when no <c>--wem-root</c> was given.
     /// </summary>
-    private static Result<PreparedAudio> PrepareAudio(ExportRequest arguments)
+    private static Result<PreparedAudio> PrepareAudio(ExportRequest arguments, ContentSources? inputs)
     {
         if (arguments.WemRoot is null)
         {
@@ -295,13 +465,13 @@ public static class ExportPipeline
 
         string output = Path.ChangeExtension(arguments.Out, ".wav");
 
-        string?[] inputs =
+        string?[] inputPaths =
         [
             arguments.Out, arguments.Mmb, arguments.Cameldata, arguments.Editordata,
             arguments.SetupAnim, arguments.ClipAnim, arguments.MouthAnim, arguments.EyesAnim,
             arguments.PupilsAnim, arguments.EyebrowsAnim, arguments.LipsyncDatabase,
         ];
-        foreach (string? input in inputs)
+        foreach (string? input in inputPaths)
         {
             if (input is not null && SamePath(output, input))
             {
@@ -328,7 +498,7 @@ public static class ExportPipeline
             return decodeRefusal;
         }
 
-        Result<double?> endResult = LipsyncEndSeconds(arguments);
+        Result<double?> endResult = LipsyncEndSeconds(arguments, inputs);
         if (!endResult.TryGetValue(out double? lipsyncEnd, out Refusal? endRefusal))
         {
             return endRefusal;
@@ -341,14 +511,14 @@ public static class ExportPipeline
     }
 
     /// <summary>The lip-sync schedule's final key time in seconds, or none when no schedule drives the mouth.</summary>
-    private static Result<double?> LipsyncEndSeconds(ExportRequest arguments)
+    private static Result<double?> LipsyncEndSeconds(ExportRequest arguments, ContentSources? inputs)
     {
         if (arguments.LipsyncDatabase is null || arguments.SpeechId is null)
         {
             return Result.Ok<double?>(null);
         }
 
-        Result<ImmutableArray<(int KeyTime, int Selector)>> schedule = ReadLipsyncSchedule(arguments);
+        Result<ImmutableArray<(int KeyTime, int Selector)>> schedule = ReadLipsyncSchedule(arguments, inputs);
         if (!schedule.TryGetValue(out ImmutableArray<(int KeyTime, int Selector)> pairs, out Refusal? refusal))
         {
             return refusal;
@@ -369,18 +539,79 @@ public static class ExportPipeline
         }
     }
 
+    /// <summary>
+    /// What one animation is called in the exported file.
+    /// </summary>
+    /// <remarks>
+    /// A lone animation keeps the name it has always had. That name is observable
+    /// output the baseline pins, and renaming it would rewrite every animated
+    /// specimen to say something a user never asked for.
+    /// <para>
+    /// Several are named after their files, without the extension, because the
+    /// name is the only handle: a viewer lists Actions by name and nothing else,
+    /// so the file's own stem is the whole of what someone has to choose by. The full path would not fit and an ordinal would say nothing.
+    /// Duplicates are left alone rather than uniquified — two files with the same
+    /// name are the caller naming the same animation twice, and silently altering
+    /// one of them would hide that.
+    /// </para>
+    /// </remarks>
+    /// <summary>
+    /// Opens one input, from the archives when that is where the inputs are.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="SourceFileReader"/> proves a file did not change while it was
+    /// being read. Bytes taken out of an archive cannot, so there is nothing to
+    /// prove and <see cref="SourceFile.FromMemory"/> is the documented way in.
+    /// A path the archives do not hold is a refusal naming the path, exactly as
+    /// a missing file would be.
+    /// </remarks>
+    private static Result<SourceFile> Open(string path, ContentSources? inputs)
+    {
+        if (inputs is null)
+        {
+            return SourceFileReader.Read(path);
+        }
+
+        Result<byte[]?> read = inputs.Read(path.Replace('\\', '/'));
+        if (!read.TryGetValue(out byte[]? bytes, out Refusal? refusal))
+        {
+            return refusal;
+        }
+
+        return bytes is null
+            ? Refusal.Resource($"The archives hold no file named {path}.", DiagnosticIds.ResourceMissing)
+            : Result.Ok(SourceFile.FromMemory(path, bytes));
+    }
+
+    private static string AnimationName(string path, bool lone) =>
+        lone ? "clip" : Path.GetFileNameWithoutExtension(path);
+
+    /// <summary>
+    /// What a queued run is called: the first animation, and how many follow.
+    /// </summary>
+    /// <remarks>
+    /// Joining every name would produce something no viewer can display and no
+    /// one can read. The order is the user's own and the window already shows
+    /// it, so the name only has to identify the file — which the opening
+    /// animation and a count do.
+    /// </remarks>
+    private static string QueueName(ImmutableArray<NamedClip> clips) =>
+        clips.Length <= 1
+            ? clips[0].Name
+            : string.Create(CultureInfo.InvariantCulture, $"{clips[0].Name} +{clips.Length - 1} more");
+
     /// <summary>The posed model to dress, the hierarchy that places it, any clip animation, and the parts left unrigged.</summary>
     private readonly record struct PoseResult(
         GeometryModel PosedModel,
         SceneGraph? Graph,
-        Animation? Animation,
+        ImmutableArray<Animation> Animations,
         ImmutableArray<string> UnriggedParts);
 
     /// <summary>
     /// Places the full geometry under a setup hierarchy — statically, or as a clip
     /// animation when one was given with --animate — or passes it through unposed.
     /// </summary>
-    private static Result<PoseResult> ApplyPose(ExportRequest arguments, GeometryModel geometry)
+    private static Result<PoseResult> ApplyPose(ExportRequest arguments, GeometryModel geometry, ContentSources? inputs)
     {
         if (arguments.SetupAnim is null)
         {
@@ -398,28 +629,38 @@ public static class ExportPipeline
                 }
             }
 
-            return Result.Ok(new PoseResult(geometry, null, null, []));
+            return Result.Ok(new PoseResult(geometry, null, [], []));
         }
 
-        Result<AnimFile> setupResult = ReadAnim(arguments.SetupAnim, hierarchy: true);
+        Result<AnimFile> setupResult = ReadAnim(arguments.SetupAnim, hierarchy: true, inputs);
         if (!setupResult.TryGetValue(out AnimFile? setup, out Refusal? setupRefusal))
         {
             return setupRefusal;
         }
 
-        AnimFile? clip = null;
-        if (arguments.ClipAnim is not null)
+        // Every clip named, in the order given. The first is also the one the
+        // single-pose paths below use, since a sampled moment belongs to one
+        // timeline; ExportRequest.Validate has already refused the combinations
+        // where that choice would be arbitrary.
+        ImmutableArray<NamedClip>.Builder clipsBuilder =
+            ImmutableArray.CreateBuilder<NamedClip>(arguments.ClipAnims.Length);
+        foreach (string path in arguments.ClipAnims)
         {
-            Result<AnimFile> clipResult = ReadAnim(arguments.ClipAnim, hierarchy: false);
-            if (!clipResult.TryGetValue(out clip, out Refusal? clipRefusal))
+            Result<AnimFile> clipResult = ReadAnim(path, hierarchy: false, inputs);
+            if (!clipResult.TryGetValue(out AnimFile? read, out Refusal? clipRefusal))
             {
                 return clipRefusal;
             }
+
+            clipsBuilder.Add(new NamedClip(AnimationName(path, arguments.ClipAnims.Length == 1), read));
         }
+
+        ImmutableArray<NamedClip> clips = clipsBuilder.MoveToImmutable();
+        AnimFile? clip = clips.IsEmpty ? null : clips[0].Animation;
 
         // Facial atlases, when any is requested, overlay the pose and take over the
         // static-versus-animated decision below.
-        Result<ImmutableArray<FacialLayer>> facialResult = ReadFacialLayers(arguments);
+        Result<ImmutableArray<FacialLayer>> facialResult = ReadFacialLayers(arguments, inputs);
         if (!facialResult.TryGetValue(out ImmutableArray<FacialLayer> facial, out Refusal? facialRefusal))
         {
             return facialRefusal;
@@ -431,47 +672,72 @@ public static class ExportPipeline
             // otherwise a single frame is sampled at --time.
             if (arguments.Animate)
             {
-                Result<AnimatedScene> animated = FacialAnimation.Animate(geometry, setup, clip!, facial);
+                Result<AnimatedScene> animated = FacialAnimation.Animate(
+                    geometry, setup, clip!, facial, arguments.AllowMissingParts);
                 if (!animated.TryGetValue(out AnimatedScene? scene, out Refusal? animateRefusal))
                 {
                     return animateRefusal;
                 }
 
                 return Result.Ok(new PoseResult(
-                    geometry.SelectParts(scene.Scene.Keep), scene.Scene.Graph, scene.Animation, scene.Scene.UnriggedParts));
+                    geometry.SelectParts(scene.Scene.Keep), scene.Scene.Graph, scene.Animations, scene.Scene.UnriggedParts));
             }
 
-            Result<PosedScene> facialPosed = FacialPose.Pose(geometry, setup, clip, arguments.Time, facial);
+            Result<PosedScene> facialPosed = FacialPose.Pose(
+                geometry, setup, clip, arguments.Time, facial, arguments.AllowMissingParts);
             if (!facialPosed.TryGetValue(out PosedScene? facialPlaced, out Refusal? facialPoseRefusal))
             {
                 return facialPoseRefusal;
             }
 
             return Result.Ok(new PoseResult(
-                geometry.SelectParts(facialPlaced.Keep), facialPlaced.Graph, null, facialPlaced.UnriggedParts));
+                geometry.SelectParts(facialPlaced.Keep), facialPlaced.Graph, [], facialPlaced.UnriggedParts));
         }
 
         // --animate emits the whole clip; otherwise a single frame is sampled at
         // --time, taking the clip where it drives a channel and the setup elsewhere.
         if (arguments.Animate)
         {
-            Result<AnimatedScene> animated = ClipAnimation.Animate(geometry, setup, clip!);
+            Result<AnimatedScene> animated = ClipAnimation.Animate(
+                geometry, setup, clips,
+                queued: !arguments.SeparateAnimations,
+                name: QueueName(clips),
+                allowMissingParts: arguments.AllowMissingParts);
             if (!animated.TryGetValue(out AnimatedScene? scene, out Refusal? animateRefusal))
             {
                 return animateRefusal;
             }
 
             return Result.Ok(new PoseResult(
-                geometry.SelectParts(scene.Scene.Keep), scene.Scene.Graph, scene.Animation, scene.Scene.UnriggedParts));
+                geometry.SelectParts(scene.Scene.Keep), scene.Scene.Graph, scene.Animations, scene.Scene.UnriggedParts));
         }
 
-        Result<PosedScene> posed = SetupPose.Pose(geometry, setup, clip, arguments.Time);
+        // A second hierarchy fills what the first cannot name. Only for a still:
+        // borrowed parts are placed rather than parented, so they would stand
+        // still while everything else moved.
+        Result<PosedScene> posed;
+        if (arguments.GapAnim is string gap)
+        {
+            Result<AnimFile> donorResult = ReadAnim(gap, hierarchy: true, inputs);
+            if (!donorResult.TryGetValue(out AnimFile? donor, out Refusal? donorRefusal))
+            {
+                return donorRefusal;
+            }
+
+            posed = BorrowedPose.Pose(geometry, setup, donor, clip, arguments.Time);
+        }
+        else
+        {
+            posed = SetupPose.Pose(
+                geometry, setup, clip, arguments.Time, arguments.AllowMissingParts);
+        }
+
         if (!posed.TryGetValue(out PosedScene? placed, out Refusal? poseRefusal))
         {
             return poseRefusal;
         }
 
-        return Result.Ok(new PoseResult(geometry.SelectParts(placed.Keep), placed.Graph, null, placed.UnriggedParts));
+        return Result.Ok(new PoseResult(geometry.SelectParts(placed.Keep), placed.Graph, [], placed.UnriggedParts));
     }
 
     /// <summary>
@@ -536,7 +802,7 @@ public static class ExportPipeline
     /// Reads and builds the requested facial layers, each a parsed atlas and the
     /// fixed sample its one-based state selects. Empty when none was asked for.
     /// </summary>
-    private static Result<ImmutableArray<FacialLayer>> ReadFacialLayers(ExportRequest arguments)
+    private static Result<ImmutableArray<FacialLayer>> ReadFacialLayers(ExportRequest arguments, ContentSources? inputs)
     {
         ImmutableArray<FacialLayer>.Builder layers = ImmutableArray.CreateBuilder<FacialLayer>();
 
@@ -545,7 +811,7 @@ public static class ExportPipeline
         // are one-based and read the zero-based atlas sample (N-1).
         if (arguments.MouthAnim is not null)
         {
-            Result<AnimFile> mouthResult = ReadAnim(arguments.MouthAnim, hierarchy: false);
+            Result<AnimFile> mouthResult = ReadAnim(arguments.MouthAnim, hierarchy: false, inputs);
             if (!mouthResult.TryGetValue(out AnimFile? mouth, out Refusal? mouthRefusal))
             {
                 return mouthRefusal;
@@ -553,7 +819,7 @@ public static class ExportPipeline
 
             if (arguments.LipsyncDatabase is not null)
             {
-                Result<ImmutableArray<(int, int)>> schedule = ReadLipsyncSchedule(arguments);
+                Result<ImmutableArray<(int, int)>> schedule = ReadLipsyncSchedule(arguments, inputs);
                 if (!schedule.TryGetValue(out ImmutableArray<(int, int)> pairs, out Refusal? scheduleRefusal))
                 {
                     return scheduleRefusal;
@@ -572,7 +838,7 @@ public static class ExportPipeline
         // between them.
         if (arguments.EyesAnim is not null)
         {
-            Result<AnimFile> eyesResult = ReadAnim(arguments.EyesAnim, hierarchy: false);
+            Result<AnimFile> eyesResult = ReadAnim(arguments.EyesAnim, hierarchy: false, inputs);
             if (!eyesResult.TryGetValue(out AnimFile? eyes, out Refusal? eyesRefusal))
             {
                 return eyesRefusal;
@@ -610,7 +876,7 @@ public static class ExportPipeline
                 continue;
             }
 
-            Result<AnimFile> atlas = ReadAnim(path, hierarchy: false);
+            Result<AnimFile> atlas = ReadAnim(path, hierarchy: false, inputs);
             if (!atlas.TryGetValue(out AnimFile? file, out Refusal? refusal))
             {
                 return refusal;
@@ -623,9 +889,9 @@ public static class ExportPipeline
     }
 
     /// <summary>Reads the lip-sync schedule for the requested speech ID as key/selector pairs.</summary>
-    private static Result<ImmutableArray<(int, int)>> ReadLipsyncSchedule(ExportRequest arguments)
+    private static Result<ImmutableArray<(int, int)>> ReadLipsyncSchedule(ExportRequest arguments, ContentSources? inputs)
     {
-        Result<SourceFile> file = SourceFileReader.Read(arguments.LipsyncDatabase!);
+        Result<SourceFile> file = Open(arguments.LipsyncDatabase!, inputs);
         if (!file.TryGetValue(out SourceFile? source, out Refusal? fileRefusal))
         {
             return fileRefusal;
@@ -640,9 +906,9 @@ public static class ExportPipeline
         return Result.Ok(ImmutableArray.CreateRange(pairs, p => (p.KeyTime, p.Selector)));
     }
 
-    private static Result<AnimFile> ReadAnim(string path, bool hierarchy)
+    private static Result<AnimFile> ReadAnim(string path, bool hierarchy, ContentSources? inputs = null)
     {
-        Result<SourceFile> file = SourceFileReader.Read(path);
+        Result<SourceFile> file = Open(path, inputs);
         if (!file.TryGetValue(out SourceFile? source, out Refusal? refusal))
         {
             return refusal;
@@ -691,14 +957,14 @@ public static class ExportPipeline
     /// pass that reads every texture it needs.
     /// </remarks>
     private static Result<MaterialSet> AssembleMaterials(
-        ExportRequest arguments, GeometryModel posedModel, int fullPartCount)
+        ExportRequest arguments, GeometryModel posedModel, int fullPartCount, ContentSources? inputs)
     {
         if (arguments.Editordata is null)
         {
             return Result.Ok(MaterialSet.Empty);
         }
 
-        Result<SourceFile> file = SourceFileReader.Read(arguments.Editordata);
+        Result<SourceFile> file = Open(arguments.Editordata, inputs);
         if (!file.IsSuccess)
         {
             return file.Refusal;
@@ -738,9 +1004,21 @@ public static class ExportPipeline
     }
 
     private static ImmutableArray<Diagnostic> Diagnose(
-        GeometryModel geometry, MaterialSet materials, bool posed, ImmutableArray<string> unriggedParts, bool mouthAtlas)
+        GeometryModel geometry, MaterialSet materials, bool posed, ImmutableArray<string> unriggedParts, bool mouthAtlas,
+        bool askedToAnimateAStill)
     {
         ImmutableArray<Diagnostic>.Builder diagnostics = ImmutableArray.CreateBuilder<Diagnostic>();
+
+        // Animation was asked for and the files hold none. The pose still went
+        // out, so this reports rather than refuses — see DiagnosticIds for the
+        // count of how ordinary an authoring choice this is.
+        if (askedToAnimateAStill)
+        {
+            diagnostics.Add(new Diagnostic(
+                DiagnosticIds.ClipHasNoMotion,
+                DiagnosticSeverity.Warning,
+                "Nothing moves in the animation asked for: every part keeps the same position, rotation and visibility throughout. The pose it sets was exported, as a still model."));
+        }
 
         // A posed export places its parts, so it is not the overlaid part list the
         // unposed warning describes; a single-part model has no states to overlay.

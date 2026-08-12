@@ -34,6 +34,16 @@ namespace Perianth.Gui;
 public sealed record TextureThumbnail(
     string Name, string Path, string Detail, Bitmap? Image, string Note);
 
+/// <summary>One file staged to go into a mod, and what it is for.</summary>
+/// <param name="Path">The archive path it will be written to.</param>
+/// <param name="Purpose">
+/// Plain English: which parts it was added for, or that it replaces a texture
+/// the game ships, or that it is this model's material list. A path alone does
+/// not distinguish two custom textures added for two different parts, and
+/// telling those apart is the whole reason somebody reads this list.
+/// </param>
+public sealed record StagedFile(string Path, string Purpose);
+
 /// <summary>
 /// The textures a model's materials bind, decoded and shown.
 /// </summary>
@@ -65,8 +75,35 @@ public sealed class TextureViewModel : ViewModelBase
     private readonly List<TextureReference> _listed = [];
     private ObservableCollection<TextureThumbnail> _thumbnails = [];
     private readonly Dictionary<string, byte[]> _replacements = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The last path this pane put into the box itself, so a proposal can be
+    /// told from something the user typed.
+    /// </summary>
+    /// <remarks>
+    /// The box is filled in after a successful addition, deliberately, so that
+    /// what was used is visible. That is also what made a second addition
+    /// overwrite the first: the box outlived the selection it was proposed for,
+    /// and the next image went to the same path. Knowing which value is ours is
+    /// what lets a typed path still win while a stale proposal is replaced.
+    /// </remarks>
+    private string _proposed = string.Empty;
+
+    /// <summary>
+    /// What each added path was added *for* — the texture and parts it aimed at.
+    /// </summary>
+    /// <remarks>
+    /// Kept across writing a mod, because it describes the model's state rather
+    /// than the session's, exactly as the accumulated edits in
+    /// <c>_editordata</c> do. Discarding is what clears it.
+    /// </remarks>
+    private readonly Dictionary<string, string> _addedFor = new(StringComparer.Ordinal);
     private CancellationTokenSource? _pending;
     private string? _archiveRoot;
+    private string? _contentRoot;
+    private ImmutableArray<SdfPathEntry> _paths;
+    private ImmutableArray<PaperSwatch> _palette;
+    private SwatchChoice? _selectedSwatch;
     private string? _workingFolder;
     private CharacterAssets? _assets;
     private EditordataFile? _editordata;
@@ -113,8 +150,14 @@ public sealed class TextureViewModel : ViewModelBase
     /// </remarks>
     public ObservableCollection<TextureThumbnail> Thumbnails => _thumbnails;
 
-    /// <summary>The archive paths waiting to go into a mod, in order.</summary>
-    public ObservableCollection<string> Replacing { get; } = [];
+    /// <summary>The files waiting to go into a mod, in order.</summary>
+    /// <remarks>
+    /// Each carries what it is <em>for</em> as well as where it goes. A list of
+    /// paths alone was legible only to whoever had just typed them: two custom
+    /// textures for two parts differ by a few characters near the end of a
+    /// long path, which is exactly the pair somebody needs to tell apart.
+    /// </remarks>
+    public ObservableCollection<StagedFile> Replacing { get; } = [];
 
     /// <summary>Shows the ones held back by the cap.</summary>
     public RelayCommand ShowAllCommand { get; }
@@ -215,6 +258,7 @@ public sealed class TextureViewModel : ViewModelBase
                 RepointCommand.Reconsider();
                 RetintCommand.Reconsider();
                 AddCommand.Reconsider();
+                OfferColours();
                 Raise(nameof(SelectedName));
                 Raise(nameof(SelectedAdvice));
             }
@@ -223,6 +267,65 @@ public sealed class TextureViewModel : ViewModelBase
 
     /// <summary>What the buttons will act on, for the pane to show.</summary>
     public string SelectedName => _selected?.Name ?? "nothing selected";
+
+    /// <summary>
+    /// The costume colours on offer for the selected texture, or empty.
+    /// </summary>
+    /// <remarks>
+    /// Filled only when the selection is one of the game's 80 paper scans. A
+    /// material binding a face, a logo or a blank sheet is not a colour, and a
+    /// grid of eighty swatches beside it would invite an edit that makes no
+    /// sense.
+    /// </remarks>
+    public ObservableCollection<SwatchChoice> Swatches { get; } = [];
+
+    /// <summary>Whether the selected texture is a colour that can be changed.</summary>
+    public bool SelectedIsColour => Swatches.Count > 0;
+
+    /// <summary>
+    /// The colour chosen from the grid, which fills in the repoint target.
+    /// </summary>
+    /// <remarks>
+    /// It sets the same field the text box does rather than acting on its own.
+    /// The edit stays one operation with one button, so choosing a colour and
+    /// typing a path cannot mean two different things — and the path is left
+    /// visible, because what is about to be written should not be hidden behind
+    /// a swatch.
+    /// </remarks>
+    public SwatchChoice? SelectedSwatch
+    {
+        get => _selectedSwatch;
+        set
+        {
+            if (Set(ref _selectedSwatch, value) && value is not null)
+            {
+                RepointTo = value.Swatch.TexturePath;
+            }
+        }
+    }
+
+    /// <summary>Offers the palette when the selection is one of its papers.</summary>
+    private void OfferColours()
+    {
+        Swatches.Clear();
+        _selectedSwatch = null;
+
+        if (_selected is not null && !_palette.IsDefaultOrEmpty)
+        {
+            PaperSwatch? current = PaperPalette.Match(_palette, _selected.Path);
+            if (current is not null)
+            {
+                foreach (PaperSwatch swatch in _palette)
+                {
+                    Swatches.Add(new SwatchChoice(
+                        swatch, string.Equals(swatch.Name, current.Name, StringComparison.Ordinal)));
+                }
+            }
+        }
+
+        Raise(nameof(SelectedSwatch));
+        Raise(nameof(SelectedIsColour));
+    }
 
     /// <summary>
     /// Which of the two edits will actually do something to this texture's parts.
@@ -382,7 +485,37 @@ public sealed class TextureViewModel : ViewModelBase
     public bool HasReplacements => _replacements.Count > 0;
 
     /// <summary>Remembers which archives the textures come from.</summary>
-    public void UseArchives(string archiveRoot) => _archiveRoot = archiveRoot;
+    public void UseArchives(string archiveRoot, ImmutableArray<SdfPathEntry> paths)
+    {
+        _archiveRoot = archiveRoot;
+        _contentRoot = null;
+        _paths = paths;
+        _palette = default;
+    }
+
+    /// <summary>
+    /// Shows the textures in a plain folder rather than in the archives.
+    /// </summary>
+    /// <remarks>
+    /// Viewing only. Everything this pane writes — an edited texture, a mod,
+    /// the check that a repointed path exists — needs the game's own file to
+    /// compare against or to write beside, and a folder is neither. Those parts
+    /// stay gated on an archive root, so choosing a folder shows the grid and
+    /// leaves the rest as it was.
+    /// </remarks>
+    public void UseFolder(string contentRoot, ImmutableArray<SdfPathEntry> paths)
+    {
+        _contentRoot = contentRoot;
+        _archiveRoot = null;
+        _paths = paths;
+        _palette = default;
+    }
+
+    /// <summary>Where the grid reads from: the folder if there is one, else the archives.</summary>
+    private (string? Content, string? Sdf) Reading => (_contentRoot, _archiveRoot);
+
+    /// <summary>Whether anything at all can be read.</summary>
+    private bool CanRead => _contentRoot is not null || _archiveRoot is not null;
 
     /// <summary>Remembers where the user's own work goes.</summary>
     public void UseWorkingFolder(string? folder) => _workingFolder = folder;
@@ -404,12 +537,15 @@ public sealed class TextureViewModel : ViewModelBase
     {
         ArgumentNullException.ThrowIfNull(path);
 
-        if (_selected is not { } thumbnail || _archiveRoot is null)
+        // A read, so it works from a folder as well as the archives. Its
+        // counterpart "Replace from PNG" does not, because taking an edit in
+        // means writing a mod against the game's own file.
+        if (_selected is not { } thumbnail || !CanRead)
         {
             return;
         }
 
-        string root = _archiveRoot;
+        (string? Content, string? Sdf) root = Reading;
         string virtualPath = thumbnail.Path;
 
         Busy = true;
@@ -459,7 +595,10 @@ public sealed class TextureViewModel : ViewModelBase
 
         if (!_replacements.ContainsKey(virtualPath))
         {
-            Replacing.Add(virtualPath);
+            // Named as a replacement, because that is what it is and what makes
+            // it different from everything else in this list: it changes that
+            // texture for every model in the game that binds it.
+            Replacing.Add(new StagedFile(virtualPath, "replaces the game's own — for every model using it"));
         }
 
         _replacements[virtualPath] = made.Dds;
@@ -485,7 +624,8 @@ public sealed class TextureViewModel : ViewModelBase
         string name = _modName.Trim().Length > 0 ? _modName.Trim() : "Untitled mod";
         string author = _modAuthor.Trim().Length > 0 ? _modAuthor.Trim() : "unknown";
 
-        List<ModFile> files = [.. Replacing.Select(path => new ModFile(path, _replacements[path]))];
+        List<ModFile> files =
+            [.. Replacing.Select(staged => new ModFile(staged.Path, _replacements[staged.Path]))];
 
         Busy = true;
         Status = "Writing the mod…";
@@ -535,7 +675,7 @@ public sealed class TextureViewModel : ViewModelBase
 
         string root = _archiveRoot;
         List<(string Path, byte[] Bytes)> gathered =
-            [.. Replacing.Select(path => (path, _replacements[path]))];
+            [.. Replacing.Select(staged => (staged.Path, _replacements[staged.Path]))];
 
         Busy = true;
         Status = "Writing patches…";
@@ -692,14 +832,10 @@ public sealed class TextureViewModel : ViewModelBase
             return;
         }
 
-        string wanted = RepointTo.Trim();
-        string path = wanted.Length > 0
-            ? wanted
-            : MaterialEdit.ProposePath(
-                _assets?.Name ?? string.Empty,
-                _selected?.Path ?? $"part_{string.Join('_', parts!)}.dds");
+        string aim = Aim(parts);
 
-        if (!TexturePath.Normalize(path, "DiffuseColor").TryGetValue(out string? normalized, out Refusal? bad))
+        if (!TexturePath.Normalize(ChoosePath(parts), "DiffuseColor")
+                .TryGetValue(out string? normalized, out Refusal? bad))
         {
             Status = bad.Message;
             return;
@@ -712,6 +848,20 @@ public sealed class TextureViewModel : ViewModelBase
         {
             Status = $"The game already has a texture at {normalized}. "
                 + "Choose another path, or use \"Replace from PNG\" to change that one everywhere.";
+            return;
+        }
+
+        // Refused rather than allowed to overwrite, because the parts already
+        // pointed at this path would change to the new image too, and nothing
+        // would say so. Redoing the *same* aim with a different image is not
+        // this case and stays allowed: that is how you correct an image you
+        // have just added.
+        if (_addedFor.TryGetValue(normalized, out string? already) &&
+            !string.Equals(already, aim, StringComparison.Ordinal))
+        {
+            Status = $"{normalized} already holds an image you added for other parts, and writing "
+                + "another there would change those too. Clear the path box for a fresh path, or "
+                + "type one of your own.";
             return;
         }
 
@@ -759,15 +909,73 @@ public sealed class TextureViewModel : ViewModelBase
 
         if (!_replacements.ContainsKey(normalized))
         {
-            Replacing.Add(normalized);
+            Replacing.Add(new StagedFile(normalized, Purpose(parts)));
         }
 
         _replacements[normalized] = dds;
+        _addedFor[normalized] = aim;
+
         RepointTo = normalized;
+        _proposed = normalized;
 
         Apply(repointed, outcome =>
             $"Added {normalized} and pointed {outcome.Sections} "
             + $"{(outcome.Sections == 1 ? "part" : "parts")} of this model at it.");
+    }
+
+    /// <summary>
+    /// What the next added image should be written to.
+    /// </summary>
+    /// <remarks>
+    /// A path the user typed always wins — that is the promise the box makes.
+    /// A path this pane proposed last time does not, because it was proposed
+    /// for the selection that was current then, and reusing it is what made a
+    /// second custom texture overwrite the first while silently repainting the
+    /// part the first one was for.
+    /// </remarks>
+    internal string ChoosePath(IReadOnlyCollection<int>? parts)
+    {
+        string wanted = RepointTo.Trim();
+
+        if (wanted.Length > 0 && !string.Equals(wanted, _proposed, StringComparison.Ordinal))
+        {
+            return wanted;
+        }
+
+        // Remembered here rather than by the caller, so that whatever proposes
+        // is what knows it proposed. A typed path deliberately does not update
+        // it: the user's own path is theirs to reuse.
+        _proposed = MaterialEdit.ProposePath(
+            _assets?.Name ?? string.Empty,
+            _selected?.Path ?? "part.dds",
+            parts);
+
+        return _proposed;
+    }
+
+    /// <summary>What an addition is aimed at: the texture, and the parts.</summary>
+    internal string Aim(IReadOnlyCollection<int>? parts) =>
+        $"{_selected?.Path ?? string.Empty}|{string.Join(',', (parts ?? []).Order())}";
+
+    /// <summary>What an addition was for, for the staged list to say.</summary>
+    /// <remarks>
+    /// The parts come first when there are any, because that is what
+    /// distinguishes one addition from another. Naming the texture instead
+    /// would give every addition aimed at one paper sheet the same description,
+    /// which is the ambiguity this exists to remove.
+    /// </remarks>
+    internal string Purpose(IReadOnlyCollection<int>? parts)
+    {
+        if (parts is { Count: > 0 })
+        {
+            return parts.Count == 1
+                ? $"new — for part {parts.First()}"
+                : $"new — for parts {string.Join(", ", parts.Order())}";
+        }
+
+        return _selected is { } thumbnail
+            ? $"new — for every part using {thumbnail.Name}"
+            : "new";
     }
 
     /// <summary>
@@ -940,7 +1148,9 @@ public sealed class TextureViewModel : ViewModelBase
 
         if (!_replacements.ContainsKey(_editordataPath!))
         {
-            Replacing.Add(_editordataPath!);
+            // One entry however many edits it accumulates: it is a single file
+            // rewritten each time, not one per change.
+            Replacing.Add(new StagedFile(_editordataPath!, "this model's materials — what each part is painted with"));
         }
 
         _replacements[_editordataPath!] = bytes;
@@ -981,21 +1191,33 @@ public sealed class TextureViewModel : ViewModelBase
         // describing a model that is no longer what the archives hold.
         _editordata = _pristine;
 
+        // And what was added for what, which described those edits.
+        _addedFor.Clear();
+        _proposed = string.Empty;
+        RepointTo = string.Empty;
+
         Raise(nameof(SelectedAdvice));
         Changed();
     }
 
-    private static Result<int> WritePng(string archiveRoot, string virtualPath, string output)
+    private static Result<int> WritePng(
+        (string? Content, string? Sdf) root, string virtualPath, string output)
     {
-        using SdfContentSource source = new(archiveRoot);
+        using ContentSources source = new(root.Content, root.Sdf);
 
-        Result<SdfContent> content = source.Read(virtualPath);
-        if (!content.TryGetValue(out SdfContent bytes, out Refusal? refusal))
+        Result<byte[]?> content = source.Read(virtualPath);
+        if (!content.TryGetValue(out byte[]? bytes, out Refusal? refusal))
         {
             return refusal;
         }
 
-        Result<DdsImage> read = DdsReader.Read(bytes.Bytes.Span);
+        if (bytes is null)
+        {
+            return Refusal.Resource(
+                "This texture is not in the folder or the archives.", DiagnosticIds.ResourceMissing);
+        }
+
+        Result<DdsImage> read = DdsReader.Read(bytes);
         if (!read.TryGetValue(out DdsImage? image, out Refusal? bad))
         {
             return bad;
@@ -1161,7 +1383,7 @@ public sealed class TextureViewModel : ViewModelBase
 
         int written = 0;
 
-        foreach (string virtualPath in Replacing)
+        foreach (string virtualPath in Replacing.Select(staged => staged.Path))
         {
             string destination = Path.Combine(
                 root, virtualPath.Replace('/', Path.DirectorySeparatorChar));
@@ -1224,7 +1446,7 @@ public sealed class TextureViewModel : ViewModelBase
 
     private async Task ReloadAsync()
     {
-        if (_assets?.Editordata is null || _archiveRoot is null)
+        if (_assets?.Editordata is null || !CanRead)
         {
             return;
         }
@@ -1239,7 +1461,7 @@ public sealed class TextureViewModel : ViewModelBase
         Status = "Reading the materials…";
         Changed();
 
-        string root = _archiveRoot;
+        (string? Content, string? Sdf) root = Reading;
         string editordata = _assets.Editordata;
         string name = _assets.Name;
 
@@ -1249,6 +1471,24 @@ public sealed class TextureViewModel : ViewModelBase
         if (mine.IsCancellationRequested)
         {
             return;
+        }
+
+        // Read once per source rather than per model: the palette is the game's,
+        // not this model's, and it does not change while a folder stays open. A
+        // source that has none — a mod folder holding only textures — simply
+        // offers no colours, which is not a failure worth reporting.
+        if (_palette.IsDefault)
+        {
+            ImmutableArray<SdfPathEntry> paths = _paths;
+            _palette = await Task.Run(
+                () =>
+                {
+                    using ContentSources sources = new(root.Content, root.Sdf);
+                    Result<ImmutableArray<PaperSwatch>> read = PaperPalette.Read(sources, paths);
+                    return read.TryGetValue(out ImmutableArray<PaperSwatch> palette, out _)
+                        ? palette
+                        : [];
+                }, mine.Token).ConfigureAwait(true);
         }
 
         if (!listed.TryGetValue(out Listing listing, out Refusal? refusal))
@@ -1281,14 +1521,14 @@ public sealed class TextureViewModel : ViewModelBase
     /// </remarks>
     private async Task DecodeAsync(int count, CancellationTokenSource mine)
     {
-        if (_archiveRoot is null || count <= 0)
+        if (!CanRead || count <= 0)
         {
             return;
         }
 
         List<TextureReference> selected = Filtered();
         int wanted = Math.Min(selected.Count, Thumbnails.Count + Math.Min(count, selected.Count));
-        string root = _archiveRoot;
+        (string? Content, string? Sdf) root = Reading;
 
         List<TextureReference> batch = selected.GetRange(
             Thumbnails.Count, wanted - Thumbnails.Count);
@@ -1357,33 +1597,34 @@ public sealed class TextureViewModel : ViewModelBase
         ImmutableArray<TextureReference> Textures, EditordataFile File);
 
     private static Result<Listing> List(
-        string archiveRoot, string editordata, string name)
+        (string? Content, string? Sdf) root, string editordata, string name)
     {
-        using SdfContentSource source = new(archiveRoot);
+        using ContentSources source = new(root.Content, root.Sdf);
 
-        Result<SdfContent> content = source.Read(editordata);
-        if (!content.TryGetValue(out SdfContent bytes, out Refusal? refusal))
+        Result<byte[]?> content = source.Read(editordata);
+        if (!content.TryGetValue(out byte[]? bytes, out Refusal? refusal))
         {
             return refusal;
         }
 
-        if (!bytes.IsPresent)
+        if (bytes is null)
         {
             return Refusal.Resource(
-                "The archives no longer hold this model's editordata.", DiagnosticIds.ResourceMissing);
+                "This model's editordata is not in the folder or the archives.", DiagnosticIds.ResourceMissing);
         }
 
         Result<EditordataFile> read = EditordataReader.Read(
-            SourceFile.FromMemory(editordata, bytes.Bytes));
+            SourceFile.FromMemory(editordata, bytes));
 
         return read.TryGetValue(out EditordataFile? file, out Refusal? bad)
             ? Result.Ok(new Listing(MaterialTextures.List(file, name), file))
             : bad;
     }
 
-    private static List<TextureThumbnail> Decode(string archiveRoot, List<TextureReference> batch)
+    private static List<TextureThumbnail> Decode(
+        (string? Content, string? Sdf) root, List<TextureReference> batch)
     {
-        using SdfContentSource source = new(archiveRoot);
+        using ContentSources source = new(root.Content, root.Sdf);
 
         List<TextureThumbnail> decoded = new(batch.Count);
         foreach (TextureReference reference in batch)
@@ -1394,22 +1635,22 @@ public sealed class TextureViewModel : ViewModelBase
         return decoded;
     }
 
-    private static TextureThumbnail Decode(SdfContentSource source, TextureReference reference)
+    private static TextureThumbnail Decode(ContentSources source, TextureReference reference)
     {
         string stem = reference.Path[(reference.Path.LastIndexOf('/') + 1)..];
 
-        Result<SdfContent> content = source.Read(reference.Path);
-        if (!content.TryGetValue(out SdfContent bytes, out Refusal? refusal))
+        Result<byte[]?> content = source.Read(reference.Path);
+        if (!content.TryGetValue(out byte[]? bytes, out Refusal? refusal))
         {
             return Missing(stem, reference, refusal.Message);
         }
 
-        if (!bytes.IsPresent)
+        if (bytes is null)
         {
-            return Missing(stem, reference, "The archives do not hold this texture.");
+            return Missing(stem, reference, "This texture is not in the folder or the archives.");
         }
 
-        Result<DdsImage> read = DdsReader.Read(bytes.Bytes.Span);
+        Result<DdsImage> read = DdsReader.Read(bytes);
         if (!read.TryGetValue(out DdsImage? image, out Refusal? bad))
         {
             return Missing(stem, reference, bad.Message);

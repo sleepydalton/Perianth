@@ -9,6 +9,8 @@ using System.Threading;
 using System.Text.Json;
 using Perianth.Core.Io;
 using Perianth.Formats.Diagnostics;
+using Perianth.Formats.Editordata;
+using Perianth.Formats.Io;
 using Perianth.Formats.Sdf;
 
 namespace Perianth.Core.Content;
@@ -223,6 +225,83 @@ public static class ArchiveExtraction
         }
 
         found.Sort(static (left, right) => string.CompareOrdinal(left.Path, right.Path));
+        return Result.Ok(found.ToImmutable());
+    }
+
+    /// <summary>
+    /// The textures a model's materials bind, for extracting alongside it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="CharacterAssets.Paths"/> cannot answer this, and the omission
+    /// is not an oversight in it: everything there is found by naming
+    /// convention, and a texture is not named after the model. It is named
+    /// inside the editordata's material bindings, and 595,271 of 595,389
+    /// bindings point into one shared tree rather than sitting beside the model
+    /// — so no rule about names could reach them, and reading the file is the
+    /// only way.
+    /// </para>
+    /// <para>
+    /// The consequence of leaving them out was quiet: an extracted character
+    /// exported from its own folder gave geometry and animation and then refused
+    /// on the first texture, which looks like a broken export rather than an
+    /// incomplete extraction.
+    /// </para>
+    /// <para>
+    /// A binding the archives do not hold is skipped rather than refused over.
+    /// A model is not less extractable because one of its 80 textures is
+    /// missing, and the export refuses over that same path later with a message
+    /// about the texture — which is where the refusal belongs, because that is
+    /// where it matters.
+    /// </para>
+    /// </remarks>
+    public static Result<ImmutableArray<string>> BoundTextures(
+        ImmutableArray<SdfPathEntry> paths,
+        ContentSources content,
+        CharacterAssets assets)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        ArgumentNullException.ThrowIfNull(assets);
+
+        if (assets.Editordata is null)
+        {
+            return Result.Ok(ImmutableArray<string>.Empty);
+        }
+
+        Result<byte[]?> read = content.Read(SdfIndex.NormalizePath(assets.Editordata));
+        if (!read.TryGetValue(out byte[]? bytes, out Refusal? refusal))
+        {
+            return refusal;
+        }
+
+        if (bytes is null)
+        {
+            return Result.Ok(ImmutableArray<string>.Empty);
+        }
+
+        Result<EditordataFile> editordata = EditordataReader.Read(
+            SourceFile.FromMemory(assets.Editordata, bytes));
+        if (!editordata.TryGetValue(out EditordataFile? parsed, out Refusal? parseRefusal) || parsed is null)
+        {
+            return parseRefusal ?? Refusal.Malformed("The editordata could not be read.");
+        }
+
+        HashSet<string> held = new(StringComparer.Ordinal);
+        foreach (SdfPathEntry entry in paths)
+        {
+            held.Add(SdfIndex.NormalizePath(entry.Path));
+        }
+
+        ImmutableArray<string>.Builder found = ImmutableArray.CreateBuilder<string>();
+        foreach (TextureReference texture in MaterialTextures.List(parsed, assets.Name))
+        {
+            string path = SdfIndex.NormalizePath(texture.Path);
+            if (held.Contains(path))
+            {
+                found.Add(path);
+            }
+        }
+
         return Result.Ok(found.ToImmutable());
     }
 

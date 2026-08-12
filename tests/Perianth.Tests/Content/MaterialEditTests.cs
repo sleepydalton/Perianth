@@ -179,6 +179,37 @@ public sealed class MaterialEditTests
     }
 
     [Fact]
+    public void Naming_parts_proposes_a_path_of_their_own()
+    {
+        // Reported by a user: two parts of one paper sheet given two different
+        // images, and both ended up with the second. Without the parts in the
+        // name, one texture proposes one path however many parts are aimed at,
+        // so the second image lands on the first one's path and the part
+        // already pointed there changes with it.
+        string whole = MaterialEdit.ProposePath("chr_test", Paper);
+        string partA = MaterialEdit.ProposePath("chr_test", Paper, [47]);
+        string partB = MaterialEdit.ProposePath("chr_test", Paper, [51]);
+
+        Assert.NotEqual(partA, partB);
+        Assert.NotEqual(whole, partA);
+
+        // The whole-texture proposal is unchanged, so this adds a case rather
+        // than moving the existing one.
+        Assert.Equal("camel/baked/assets/textures/perianth/chr_test/tex_ashgray_d.dds", whole);
+        Assert.EndsWith("tex_ashgray_d_part_47.dds", partA, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void One_set_of_parts_is_one_path_however_it_was_typed()
+    {
+        // Two spellings of the same aim must not become two textures, or
+        // correcting an image would leave the first one bound to half the parts.
+        Assert.Equal(
+            MaterialEdit.ProposePath("chr_test", Paper, [47, 51]),
+            MaterialEdit.ProposePath("chr_test", Paper, [51, 47]));
+    }
+
+    [Fact]
     public void Retinting_ignores_a_texture_named_off_the_diffuse_channel()
     {
         // The fault this pins cost a real in-game test. tex_white16_d.dds is

@@ -192,7 +192,21 @@ internal static class ExtractCommand
             // the rules are shown rather than merely applied.
             Describe(assets, error);
 
-            Result<ImmutableArray<SdfPathEntry>> set = ArchiveExtraction.Exactly(paths, assets.Paths());
+            // The textures the materials bind, alongside the files the naming
+            // conventions found. Without them an extracted character exports
+            // from its own folder as geometry and animation and then refuses on
+            // its first texture, which reads as a broken export rather than an
+            // incomplete extraction.
+            using ContentSources content = new(contentRoot: null, sdfRoot: sdfRoot);
+            Result<ImmutableArray<string>> textures =
+                ArchiveExtraction.BoundTextures(paths, content, assets);
+            if (!textures.TryGetValue(out ImmutableArray<string> bound, out Refusal? textureRefusal))
+            {
+                return Program.Fail(textureRefusal, json, output, error, "Extraction");
+            }
+
+            Result<ImmutableArray<SdfPathEntry>> set =
+                ArchiveExtraction.Exactly(paths, [.. assets.Paths(), .. bound]);
             if (!set.TryGetValue(out wanted, out Refusal? setRefusal))
             {
                 return Program.Fail(setRefusal, json, output, error, "Extraction");

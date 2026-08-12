@@ -1,6 +1,8 @@
 using Avalonia;
 using Avalonia.Styling;
 
+using Perianth.Formats.Diagnostics;
+
 namespace Perianth.Gui;
 
 /// <summary>
@@ -22,16 +24,49 @@ public sealed class MainViewModel : ViewModelBase
         Browse.Opened += root =>
         {
             Export.UseArchives(root, Browse.Paths);
-            Texture.UseArchives(root);
+            Texture.UseArchives(root, Browse.Paths);
+            Costume.UseArchives(root, Browse.Paths);
             Patch.UseArchives(root);
             Remember(_settings with { ArchiveRoot = root });
         };
+
+        // A plain folder reaches the export pane and no further. Editing a
+        // texture and making a patch both need the game's own file to compare
+        // against, which a folder of extracted or modified files is not — so
+        // those panes keep whatever archives they were given rather than being
+        // pointed at a tree that cannot answer them. The folder is not
+        // remembered either: the archive root is a setting because it is the
+        // same every time, and a folder is wherever this piece of work is.
+        Browse.OpenedFolder += root =>
+        {
+            Export.UseFolder(root, Browse.Paths);
+            Texture.UseFolder(root, Browse.Paths);
+        };
         Asset.Resolved += Export.Show;
         Asset.Resolved += Texture.Show;
+        Asset.Resolved += Costume.Show;
 
         // So an edit can be seen in Blender before it is ever loaded in the
         // game. One function, not a reference to the other pane.
-        Export.StagedChanges = Texture.OverlayInto;
+        // One overlay, two sources. The export reads an ordinary content root
+        // and knows nothing about which pane put what in it.
+        Export.StagedChanges = root =>
+        {
+            Result<int> textures = Texture.OverlayInto(root);
+            if (!textures.TryGetValue(out int fromTextures, out Refusal? refusal))
+            {
+                return refusal;
+            }
+
+            Result<int> costume = Costume.OverlayInto(root);
+            return costume.TryGetValue(out int fromCostume, out Refusal? costumeRefusal)
+                ? Result.Ok(fromTextures + fromCostume)
+                : costumeRefusal;
+        };
+
+        // What is being worn joins the export as models drawn alongside.
+        Export.Equipment = () => Costume.WornModels;
+        Costume.WornChanged += Export.CostumeChanged;
         Export.StagedCount = () => Texture.Staged;
         Export.Saved += () =>
         {
@@ -55,6 +90,9 @@ public sealed class MainViewModel : ViewModelBase
 
     /// <summary>What its materials are painted with.</summary>
     public TextureViewModel Texture { get; } = new();
+
+    /// <summary>Dressing the main character, when that is what is selected.</summary>
+    public CostumeViewModel Costume { get; } = new();
 
     /// <summary>Applying patches somebody else made.</summary>
     public PatchViewModel Patch { get; } = new();

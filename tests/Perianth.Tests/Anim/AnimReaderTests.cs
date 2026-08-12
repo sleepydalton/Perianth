@@ -167,6 +167,33 @@ public sealed class AnimReaderTests : IDisposable
     }
 
     [Fact]
+    public void A_flat_payload_holds_every_channel_at_one_sample_before_the_next()
+    {
+        // Two channels and two samples, which is the smallest shape where the
+        // orderings differ — and the reason nothing caught this for so long is
+        // that every other flat test here animates a single channel, where
+        // sample-major and channel-major are the same bytes.
+        //
+        // Laid out [ch0@s0, ch1@s0, ch0@s1, ch1@s1] = 16, 32, 48, 64. Read
+        // channel-major instead, channel 0 would give 16 then 32, and the
+        // second half of the clip would be another joint's motion — which is
+        // exactly how a real character came to flail. Roadmap §10.5.
+        byte[] section = Concat(Chunk("TRAD", Concat(
+            Fixed3(16, 0, 0), Fixed3(32, 0, 0), Fixed3(48, 0, 0), Fixed3(64, 0, 0))));
+
+        AnimFile anim = Read(hierarchy: false, nodeCount: 2, layout: 5,
+            ("TRAI", Selectors(0, 1)),
+            ("__RAW__", section),
+            ("SCAI", Selectors(0xFFFF, 0xFFFF)),
+            ("NAME", Names("a", "b")));
+
+        Assert.Equal(16.0, anim.DecodeTranslation(0, 0).Value.X, 9);
+        Assert.Equal(32.0, anim.DecodeTranslation(1, 0).Value.X, 9);
+        Assert.Equal(48.0, anim.DecodeTranslation(0, 1).Value.X, 9);
+        Assert.Equal(64.0, anim.DecodeTranslation(1, 1).Value.X, 9);
+    }
+
+    [Fact]
     public void A_fractional_position_linearly_interpolates_translation()
     {
         // One animated channel, two samples: 0 then 64. Halfway is 32.
@@ -198,6 +225,34 @@ public sealed class AnimReaderTests : IDisposable
         Result<double> past = anim.SamplePosition(1.0);
         Assert.True(past.IsRefused);
         Assert.Equal(Perianth.Formats.Diagnostics.RefusalKind.Unsupported, past.Refusal.Kind);
+    }
+
+    [Fact]
+    public void A_companion_track_holds_its_last_sample_instead_of_refusing()
+    {
+        // A setup ANIM is a rest pose and is routinely far shorter than the clip
+        // played against it — three samples, an eighth of a second, against
+        // clips of several seconds — so sampling it at the clip's time refused
+        // and took every one of that character's animations with it.
+        //
+        // The distinction that has to survive is above: a --time past the end of
+        // the file the user actually named is still a refusal, because there the
+        // request is for a moment that does not exist. Only a companion clamps.
+        AnimFile anim = Read(hierarchy: false, nodeCount: 1, layout: 5,
+            ("SCAI", Selectors(0xFFFF)),
+            ("NAME", Names("n")));
+
+        Assert.Equal(7.0, anim.ClampedSamplePosition(1.0).Value, 9);
+        Assert.Equal(7.0, anim.ClampedSamplePosition(1000.0).Value, 9);
+
+        // Within range it is the same function, so a clamp cannot quietly
+        // become a different mapping for times that always worked.
+        Assert.Equal(anim.SamplePosition(0.0).Value, anim.ClampedSamplePosition(0.0).Value, 9);
+        Assert.Equal(anim.SamplePosition(5.0 / 30.0).Value, anim.ClampedSamplePosition(5.0 / 30.0).Value, 9);
+
+        // And it is a clamp, not a licence: the request still has to make sense.
+        Assert.True(anim.ClampedSamplePosition(-1.0).IsRefused);
+        Assert.True(anim.ClampedSamplePosition(double.NaN).IsRefused);
     }
 
     [Fact]

@@ -264,25 +264,35 @@ public sealed class MmbReaderTests : IDisposable
             StringComparison.Ordinal);
     }
 
-    [Theory]
-    [InlineData(0)]
-    [InlineData(241)]
-    public void A_label_length_outside_one_to_two_hundred_and_forty_is_not_a_record(int length)
+    [Fact]
+    public void An_empty_label_is_not_a_record()
     {
         Assert.Contains(
             "No model-part records",
-            ReadRefused(new MmbFileBuilder { Label = new string('a', length) }).Message,
+            ReadRefused(new MmbFileBuilder { Label = string.Empty }).Message,
             StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void A_label_of_the_longest_accepted_length_is_still_a_record()
+    [Theory]
+    [InlineData(241)]
+    [InlineData(249)]
+    [InlineData(447)]
+    [InlineData(1000)]
+    public void A_label_longer_than_the_reference_cap_is_still_a_record(int length)
     {
-        // The boundary has to be inclusive on this side, or the widest real
-        // labels would silently stop being found.
-        MmbModel model = ReadOk(new MmbFileBuilder { Label = new string('a', 240) });
+        // The reference capped the label at 240 bytes and this suite asserted
+        // that boundary rather than questioning it. The cap hid ten of the
+        // corpus's models: every record/constant count mismatch in all 14,503
+        // pairs was a part whose name ran past 240, and the longest real label
+        // is 447. Nothing anywhere justified the number.
+        //
+        // 249 and 447 are real lengths that were being dropped. 1000 is here
+        // because no bound replaced the old one: the label is limited by the
+        // file, and the printable-ASCII rule is what makes a long false match
+        // vanishingly unlikely.
+        MmbModel model = ReadOk(new MmbFileBuilder { Label = new string('a', length) });
 
-        Assert.Equal(240, model.Parts[0].Label.Length);
+        Assert.Equal(length, model.Parts[0].Label.Length);
     }
 
     [Fact]

@@ -73,6 +73,30 @@ public sealed class SetupPoseTests : IDisposable
     }
 
     [Fact]
+    public void A_borrowed_hierarchy_poses_what_it_names_when_the_caller_asks()
+    {
+        // The same foreign rig as above, which refuses by default and must: a
+        // hierarchy naming three of five parts is usually the wrong file. But 29
+        // of the game's characters have no setup at all, and for those a
+        // relative's hierarchy is the only one there is -- one such model is
+        // posed by a sibling's at 12.8% unnamed, just past the limit.
+        //
+        // What it must never do is hide the loss: the parts it cannot name are
+        // omitted and reported by name, exactly as an unrigged part always is.
+        AnimFile setup = Setup(
+            names: ["n0", "n1", "n2"],
+            parents: [Root, Root, Root],
+            scai: [Active, Active, Active]);
+
+        GeometryModel model = Model(("n0", 0), ("n1", 1), ("n2", 2), ("orphanA", 3), ("orphanB", 4));
+
+        PosedScene pose = SetupPose.Pose(model, setup, null, 0.0, allowMissingParts: true).Value;
+
+        Assert.Equal([0, 1, 2], pose.Keep);
+        Assert.Equal(2, pose.UnriggedParts.Length);
+    }
+
+    [Fact]
     public void A_time_a_still_setup_cannot_reach_refuses_as_unsupported()
     {
         // The setup stores no samples, so only time 0 can be asked of it: a

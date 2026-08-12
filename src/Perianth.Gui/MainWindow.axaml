@@ -71,6 +71,19 @@
                   Foreground="{DynamicResource AppOnAccent}"
                   BorderThickness="0" Padding="10,7" FontWeight="SemiBold" />
 
+          <!-- The other way in: a folder of files already extracted, or a mod.
+               Both mirror the archive's own paths, so the same search, the same
+               type list and the same asset pane work over either. Export reads
+               from it; the texture and patch panes do not, because both need the
+               game's own file to compare against and a folder is not that. -->
+          <Button DockPanel.Dock="Top" Content="{Binding LooseFolderLabel}"
+                  Click="ChooseLooseFolder" Margin="0,6,0,0"
+                  HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                  Background="Transparent"
+                  Foreground="{DynamicResource AppText}"
+                  BorderBrush="{DynamicResource AppBorder}" Padding="10,6" FontSize="11"
+                  ToolTip.Tip="An extraction this tool wrote, or a mod folder. Exports come from the folder rather than the game's archives." />
+
           <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="0,10,0,0"
                 IsEnabled="{Binding HasArchives}">
             <TextBox Text="{Binding Search}"
@@ -84,6 +97,17 @@
                     Foreground="{DynamicResource AppText}"
                     BorderBrush="{DynamicResource AppBorder}" Padding="10,6" />
           </Grid>
+
+          <!-- The types are read from the archives rather than listed here, so
+               this shows what is actually in them — including the types this
+               tool cannot open, which is worth being able to see. A type on its
+               own is a search: picking one with the box empty lists that type. -->
+          <ComboBox DockPanel.Dock="Top" Margin="0,6,0,0"
+                    HorizontalAlignment="Stretch" FontSize="12"
+                    ItemsSource="{Binding FileTypes}"
+                    SelectedItem="{Binding FileType}"
+                    IsEnabled="{Binding HasArchives}"
+                    ToolTip.Tip="Narrow the list to one kind of file, or pick a type on its own to list every file of that kind." />
 
           <TextBlock DockPanel.Dock="Bottom" Classes="paneNote" Text="{Binding Status}" Margin="0,8,0,0" />
 
@@ -198,10 +222,16 @@
                      someone changing a character usually changes several
                      things, and those should become one mod to install rather
                      than one apiece. -->
+                <!-- Bounded and scrollable: this panel grew with every editing
+                     operation added, and docked to the bottom it took whatever
+                     height it wanted, squeezing the texture grid above it out of
+                     the pane entirely. -->
                 <Border DockPanel.Dock="Bottom" Margin="0,10,0,0" Padding="10"
+                        MaxHeight="360"
                         Background="{DynamicResource AppBackground}"
                         BorderBrush="{DynamicResource AppBorder}"
                         BorderThickness="1" CornerRadius="4">
+                  <ScrollViewer VerticalScrollBarVisibility="Auto">
                   <StackPanel Spacing="7">
 
                     <TextBlock Text="{Binding SelectedName}" FontFamily="monospace" FontSize="11"
@@ -272,6 +302,39 @@
                                TextWrapping="Wrap"
                                IsVisible="{Binding SelectedAdvice, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 
+                    <!-- The game's own costume colours, shown only when the
+                         selected texture is one of them. Eighty names would be
+                         unreadable, so the swatch is drawn: it is the colour the
+                         game's own picker shows, so the grid matches the one a
+                         player already knows. Choosing one fills in the path
+                         below rather than acting on its own, so the edit stays
+                         one operation with one button and what is about to be
+                         written stays visible. -->
+                    <StackPanel Spacing="4" IsVisible="{Binding SelectedIsColour}">
+                      <TextBlock Text="Colour" Classes="optionLabel" />
+                      <!-- Said because the game does not work this way: there,
+                           choosing a colour IS the change. Here it fills in the
+                           path and the button applies it, which is one step more
+                           than anyone expects. -->
+                      <TextBlock Classes="paneNote" FontSize="10" TextWrapping="Wrap"
+                                 Text="Pick a colour, then press &quot;Use instead&quot; to apply it." />
+                      <ComboBox ItemsSource="{Binding Swatches}"
+                                SelectedItem="{Binding SelectedSwatch}"
+                                HorizontalAlignment="Stretch" FontSize="12" MaxDropDownHeight="320"
+                                ToolTip.Tip="The colours this piece can be, as the game offers them. Choosing one fills in the path below; press Use instead to apply it.">
+                        <ComboBox.ItemTemplate>
+                          <DataTemplate>
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                              <Border Width="16" Height="16" CornerRadius="2"
+                                      Background="{Binding Colour}"
+                                      BorderBrush="{DynamicResource AppBorder}" BorderThickness="1" />
+                              <TextBlock Text="{Binding Label}" VerticalAlignment="Center" FontSize="12" />
+                            </StackPanel>
+                          </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                      </ComboBox>
+                    </StackPanel>
+
                     <Grid ColumnDefinitions="*,6,Auto">
                       <TextBox PlaceholderText="or a path — left empty, one is proposed"
                                Text="{Binding RepointTo}"
@@ -293,9 +356,13 @@
                       <ItemsControl ItemsSource="{Binding Replacing}">
                         <ItemsControl.ItemTemplate>
                           <DataTemplate>
-                            <TextBlock Text="{Binding}" FontFamily="monospace" FontSize="10"
-                                       TextTrimming="CharacterEllipsis"
-                                       Foreground="{DynamicResource AppTextMuted}" />
+                            <StackPanel Margin="0,0,0,4" ToolTip.Tip="{Binding Path}">
+                              <TextBlock Text="{Binding Purpose}" FontSize="11"
+                                         TextWrapping="Wrap" />
+                              <TextBlock Text="{Binding Path}" FontFamily="monospace" FontSize="10"
+                                         TextTrimming="CharacterEllipsis"
+                                         Foreground="{DynamicResource AppTextMuted}" />
+                            </StackPanel>
                           </DataTemplate>
                         </ItemsControl.ItemTemplate>
                       </ItemsControl>
@@ -332,6 +399,7 @@
                     </StackPanel>
 
                   </StackPanel>
+                  </ScrollViewer>
                 </Border>
 
                 <Button DockPanel.Dock="Bottom" Content="{Binding ShowAllText}"
@@ -395,6 +463,83 @@
               </DockPanel>
             </TabItem>
 
+            <!-- Dressing the main character. Only that model: all 1,196
+                 equipment pieces are fitted to its hierarchy, so hanging one on
+                 another character would pose it by a hierarchy nobody measured
+                 it against. The tab says so rather than sitting empty. -->
+            <TabItem Header="Costume">
+              <DockPanel DataContext="{Binding Costume}" Margin="0,8,0,0">
+
+                <TextBlock DockPanel.Dock="Top" Text="{Binding Status}" Classes="paneNote"
+                           FontSize="11" TextWrapping="Wrap" Margin="0,0,0,8" />
+
+                <ProgressBar DockPanel.Dock="Top" IsIndeterminate="True" Height="3"
+                             Margin="0,0,0,8" IsVisible="{Binding Busy}" />
+
+                <ScrollViewer VerticalScrollBarVisibility="Auto" AllowAutoHide="False"
+                              IsVisible="{Binding Applies}">
+                  <ItemsControl ItemsSource="{Binding Slots}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <StackPanel Spacing="3" Margin="0,0,8,12">
+                          <TextBlock Text="{Binding Name}" Classes="optionLabel" />
+                          <ComboBox ItemsSource="{Binding Items}" SelectedItem="{Binding Chosen}"
+                                    HorizontalAlignment="Stretch" FontSize="12" MaxDropDownHeight="320" />
+
+                          <!-- Which way to draw it, when there is more than one.
+                               A hairstyle ships six cuts for different amounts of
+                               headwear and the game's choice is not in its files,
+                               so it is asked for rather than guessed. -->
+                          <StackPanel Spacing="2" Margin="14,2,0,0" IsVisible="{Binding HasVariants}">
+                            <TextBlock Text="How much of it shows" Classes="paneNote" FontSize="10" />
+                            <ComboBox ItemsSource="{Binding Variants}" SelectedItem="{Binding Variant}"
+                                      HorizontalAlignment="Stretch" FontSize="11" MaxDropDownHeight="320" />
+                          </StackPanel>
+
+                          <!-- The chosen piece's own colours, as many as it has.
+                               A costume body has six where the game offers two. -->
+                          <ItemsControl ItemsSource="{Binding Colours}" IsVisible="{Binding HasColours}"
+                                        Margin="14,4,0,0">
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate>
+                                <StackPanel Spacing="2" Margin="0,0,0,6">
+                                  <!-- The colour it is now, beside its name. Without
+                                       it a row reads as a word nobody can picture,
+                                       and "which one is the shirt?" has no answer. -->
+                                  <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <Border Width="12" Height="12" CornerRadius="2"
+                                            VerticalAlignment="Center"
+                                            Background="{Binding Swatch}"
+                                            BorderBrush="{DynamicResource AppBorder}" BorderThickness="1" />
+                                    <TextBlock Text="{Binding Label}" Classes="paneNote" FontSize="10"
+                                               VerticalAlignment="Center" />
+                                  </StackPanel>
+                                  <ComboBox ItemsSource="{Binding Swatches}" SelectedItem="{Binding Chosen}"
+                                            HorizontalAlignment="Stretch" FontSize="11" MaxDropDownHeight="320">
+                                    <ComboBox.ItemTemplate>
+                                      <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                          <Border Width="14" Height="14" CornerRadius="2"
+                                                  Background="{Binding Colour}"
+                                                  BorderBrush="{DynamicResource AppBorder}" BorderThickness="1" />
+                                          <TextBlock Text="{Binding Label}" VerticalAlignment="Center" FontSize="11" />
+                                        </StackPanel>
+                                      </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                  </ComboBox>
+                                </StackPanel>
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
+                        </StackPanel>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </ScrollViewer>
+
+              </DockPanel>
+            </TabItem>
+
           </TabControl>
 
         </DockPanel>
@@ -415,7 +560,70 @@
                   Foreground="{DynamicResource AppOnAccent}"
                   BorderThickness="0" Padding="10,7" FontWeight="SemiBold" />
 
-          <StackPanel DockPanel.Dock="Top" Margin="0,12,0,0" Spacing="8" IsEnabled="{Binding Idle}">
+          <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
+            <Button Content="Extract" Command="{Binding ExtractCommand}"
+                    Background="Transparent" Foreground="{DynamicResource AppText}"
+                    BorderBrush="{DynamicResource AppBorder}" Padding="12,6" />
+            <Button Content="Export GLB" Command="{Binding ExportCommand}"
+                    Background="{DynamicResource AppAccent}"
+                    Foreground="{DynamicResource AppOnAccent}"
+                    BorderThickness="0" Padding="12,6" FontWeight="SemiBold" />
+            <Button Content="Stop" Command="{Binding CancelCommand}"
+                    IsVisible="{Binding Busy}"
+                    Background="Transparent" Foreground="{DynamicResource AppText}"
+                    BorderBrush="{DynamicResource AppBorder}" Padding="12,6" />
+          </StackPanel>
+
+          <TextBlock DockPanel.Dock="Bottom" Text="{Binding Progress}"
+                     IsVisible="{Binding Progress, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                     FontFamily="monospace" FontSize="11" Margin="0,10,0,0"
+                     Foreground="{DynamicResource AppTextMuted}" />
+
+          <TextBlock DockPanel.Dock="Bottom" Classes="paneNote" Text="{Binding Status}" Margin="0,10,0,0" />
+
+          <!-- A sentence each, with the rest behind it. Nothing is abbreviated
+               away: the material disclosure is the only place the engine inputs
+               the shader does not reproduce are written down, so it stays - but
+               it is not shouted at someone trying to work. -->
+          <ScrollViewer DockPanel.Dock="Bottom" MaxHeight="220" Margin="0,12,0,0"
+                        VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding Messages}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:Note">
+                  <Border Classes.done="{Binding IsDone}"
+                          Classes.tip="{Binding IsTip}"
+                          Classes.problem="{Binding IsProblem}"
+                          Classes.caveat="{Binding IsCaveat}"
+                          Classes="note" Margin="0,0,0,6">
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="{Binding Summary}" FontSize="11.5" TextWrapping="Wrap"
+                                 Foreground="{DynamicResource AppText}" />
+                      <ToggleButton Name="Disclose"
+                                    Theme="{StaticResource DisclosureToggle}"
+                                    IsVisible="{Binding HasDetail}"
+                                    Content="Details" />
+                      <TextBlock Text="{Binding Detail}" FontSize="11" TextWrapping="Wrap"
+                                 Margin="7,2,0,2"
+                                 IsVisible="{Binding #Disclose.IsChecked}"
+                                 Foreground="{DynamicResource AppTextMuted}" />
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+
+          <!-- The options scroll and the buttons do not. Everything here used to
+               dock to the top, so each option added pushed Export further down
+               and eventually off the pane, where nothing could reach it. What a
+               user must always be able to press is pinned to the bottom; what
+               they read on the way is what scrolls. -->
+          <!-- AllowAutoHide off so this scrollbar takes its own width instead of
+               floating over the content. The options hold scrolling lists of
+               their own, and a floating outer bar lands exactly on top of the
+               inner one: the animation list could be seen and not dragged. -->
+          <ScrollViewer VerticalScrollBarVisibility="Auto" AllowAutoHide="False" Padding="0,0,6,0">
+          <StackPanel Margin="0,12,0,0" Spacing="8" IsEnabled="{Binding Idle}">
 
             <CheckBox IsChecked="{Binding Pose}" Content="{Binding PoseLabel}" />
 
@@ -424,6 +632,61 @@
                  absence of a choice. -->
             <TextBlock Text="{Binding PoseNote}" Classes="paneNote" FontSize="10" TextWrapping="Wrap"
                        IsVisible="{Binding PoseNote, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+            <!-- Only for a model with no setup ANIM of its own: 29 of the game's
+                 918 characters. Each row says what it draws, because the choice
+                 is otherwise between hundreds of identical-looking names, and
+                 because the one that names the most of a model can be a crowd
+                 rig that scatters the parts across a scene. -->
+            <StackPanel Spacing="4" IsVisible="{Binding NeedsDonor}">
+              <TextBlock Text="This model has no setup of its own" Classes="optionLabel" />
+              <TextBlock Classes="paneNote" FontSize="10" TextWrapping="Wrap"
+                         Text="Borrow a hierarchy from another character to pose it. None of them is this model's, so expect to try a few and to combine two — parts the borrowed ones cannot name are left out and reported." />
+
+              <Button Content="Look for hierarchies to try" Command="{Binding FindDonorsCommand}"
+                      HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" FontSize="11" />
+
+              <TextBlock Text="{Binding DonorNote}" Classes="paneNote" FontSize="10" TextWrapping="Wrap"
+                         IsVisible="{Binding DonorNote, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+              <TextBlock Text="Try posing with" Classes="optionLabel"
+                         IsVisible="{Binding HasDonors}" />
+              <ComboBox ItemsSource="{Binding PrimaryDonors}" SelectedItem="{Binding PrimaryDonor}"
+                        HorizontalAlignment="Stretch" FontSize="12"
+                        IsVisible="{Binding HasDonors}" />
+
+              <TextBlock Text="Fill the gaps from" Classes="optionLabel"
+                         IsVisible="{Binding HasPrimaryDonor}" />
+              <ComboBox ItemsSource="{Binding GapDonors}" SelectedItem="{Binding GapDonor}"
+                        HorizontalAlignment="Stretch" FontSize="12"
+                        IsVisible="{Binding HasPrimaryDonor}" />
+
+              <!-- The ranking already puts a disagreeing hierarchy last. This is
+                   for someone who picked one anyway: the export comes apart, and
+                   nothing else would say so until they opened it. -->
+              <TextBlock Text="{Binding DonorWarning}" Classes="paneNote" FontSize="10" TextWrapping="Wrap"
+                         Foreground="{DynamicResource AppAccent}"
+                         IsVisible="{Binding DonorWarning, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            </StackPanel>
+
+            <!-- Only when a folder is the source. A mod folder holds only what
+                 was changed, so without this there is nothing to export from;
+                 with it on silently, a mod with a misspelt path exports
+                 perfectly here and draws nothing in the game. Hence a question
+                 rather than a default. -->
+            <CheckBox IsChecked="{Binding FillFromArchives}"
+                      IsVisible="{Binding CanFillFromArchives}"
+                      Content="Fill gaps from the game's archives"
+                      ToolTip.Tip="Your folder first, the game's own files for anything it does not hold. Off means the export refuses when something is missing, which is how you find out your mod is incomplete." />
+
+            <!-- What happens to the costume, when it is not simply "it goes in".
+                 The pipeline refuses equipment beside an animation and its
+                 message names command-line flags, which nobody here can act on
+                 — so the window does not make that combination and says this
+                 instead. -->
+            <TextBlock Text="{Binding CostumeNote}" Classes="paneNote" FontSize="10" TextWrapping="Wrap"
+                       IsVisible="{Binding CostumeNote, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
             <CheckBox IsChecked="{Binding Materials}" Content="Materials and textures" />
 
             <!-- The point of this one: a GLB costs nothing and a mod loader run
@@ -442,16 +705,59 @@
             <TextBlock Text="{Binding ChangesNote}" Classes="paneNote" FontSize="10" TextWrapping="Wrap"
                        IsVisible="{Binding ChangesNote, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 
+            <!-- Two lists: everything this model can play, filtered because a
+                 character can carry hundreds, and the queue built from it. A
+                 queue rather than a set of ticks because the order is the point
+                 and the same animation may be wanted twice. -->
             <StackPanel Spacing="4">
-              <TextBlock Text="Animation" Classes="optionLabel" />
-              <ComboBox ItemsSource="{Binding Clips}" SelectedItem="{Binding Clip}"
-                        HorizontalAlignment="Stretch" MaxDropDownHeight="320">
-                <ComboBox.ItemTemplate>
-                  <DataTemplate x:DataType="vm:ClipChoice">
-                    <TextBlock Text="{Binding Label}" FontSize="12" />
-                  </DataTemplate>
-                </ComboBox.ItemTemplate>
-              </ComboBox>
+              <TextBlock Text="Animations" Classes="optionLabel" />
+              <TextBox Text="{Binding ClipFilter}" PlaceholderText="Search, e.g. idle or combat"
+                       Background="{DynamicResource AppBackground}"
+                       Foreground="{DynamicResource AppText}"
+                       BorderBrush="{DynamicResource AppBorder}" FontSize="12" />
+
+              <Border BorderBrush="{DynamicResource AppBorder}" BorderThickness="1" CornerRadius="3">
+                <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
+                  <ItemsControl ItemsSource="{Binding ShownClips}" Margin="2">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:ClipChoice">
+                        <Button Content="{Binding Label}" Click="AddClipToQueue" Tag="{Binding}"
+                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                                Background="Transparent" BorderThickness="0" FontSize="12" Padding="4,2" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </ScrollViewer>
+              </Border>
+
+              <Button Content="Add all shown" Command="{Binding AddShownCommand}" FontSize="11"
+                      HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+
+              <TextBlock Text="Playing, in order" Classes="optionLabel" />
+              <Border BorderBrush="{DynamicResource AppBorder}" BorderThickness="1" CornerRadius="3">
+                <ListBox ItemsSource="{Binding Queue}" SelectedIndex="{Binding QueuedIndex}"
+                         MaxHeight="130" Background="Transparent">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="vm:ClipChoice">
+                      <TextBlock Text="{Binding Label}" FontSize="12" />
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+              </Border>
+
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <Button Content="↑" Command="{Binding MoveUpCommand}" FontSize="11" />
+                <Button Content="↓" Command="{Binding MoveDownCommand}" FontSize="11" />
+                <Button Content="Repeat" Command="{Binding RepeatCommand}" FontSize="11" />
+                <Button Content="Remove" Command="{Binding RemoveCommand}" FontSize="11" />
+                <Button Content="Clear" Command="{Binding ClearQueueCommand}" FontSize="11" />
+              </StackPanel>
+
+              <CheckBox IsChecked="{Binding PlayInOrder}" Content="Play them one after another"
+                        ToolTip.Tip="On: one animation, so pressing play in Blender shows all of them in order. Off: one Action each, which is the right shape to build with but arrives as separate tracks you have to unmute one at a time." />
+
+              <TextBlock Text="{Binding ClipSummary}" Classes="paneNote" FontSize="10" TextWrapping="Wrap"
+                         IsVisible="{Binding ClipSummary, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
             </StackPanel>
 
             <StackPanel Spacing="6" IsVisible="{Binding HasClip}">
@@ -571,57 +877,6 @@
             </StackPanel>
 
           </StackPanel>
-
-          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
-            <Button Content="Extract" Command="{Binding ExtractCommand}"
-                    Background="Transparent" Foreground="{DynamicResource AppText}"
-                    BorderBrush="{DynamicResource AppBorder}" Padding="12,6" />
-            <Button Content="Export GLB" Command="{Binding ExportCommand}"
-                    Background="{DynamicResource AppAccent}"
-                    Foreground="{DynamicResource AppOnAccent}"
-                    BorderThickness="0" Padding="12,6" FontWeight="SemiBold" />
-            <Button Content="Stop" Command="{Binding CancelCommand}"
-                    IsVisible="{Binding Busy}"
-                    Background="Transparent" Foreground="{DynamicResource AppText}"
-                    BorderBrush="{DynamicResource AppBorder}" Padding="12,6" />
-          </StackPanel>
-
-          <TextBlock DockPanel.Dock="Top" Text="{Binding Progress}"
-                     IsVisible="{Binding Progress, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
-                     FontFamily="monospace" FontSize="11" Margin="0,10,0,0"
-                     Foreground="{DynamicResource AppTextMuted}" />
-
-          <TextBlock DockPanel.Dock="Bottom" Classes="paneNote" Text="{Binding Status}" Margin="0,10,0,0" />
-
-          <!-- A sentence each, with the rest behind it. Nothing is abbreviated
-               away: the material disclosure is the only place the engine inputs
-               the shader does not reproduce are written down, so it stays - but
-               it is not shouted at someone trying to work. -->
-          <ScrollViewer Margin="0,12,0,0">
-            <ItemsControl ItemsSource="{Binding Messages}">
-              <ItemsControl.ItemTemplate>
-                <DataTemplate x:DataType="vm:Note">
-                  <Border Classes.done="{Binding IsDone}"
-                          Classes.tip="{Binding IsTip}"
-                          Classes.problem="{Binding IsProblem}"
-                          Classes.caveat="{Binding IsCaveat}"
-                          Classes="note" Margin="0,0,0,6">
-                    <StackPanel Spacing="4">
-                      <TextBlock Text="{Binding Summary}" FontSize="11.5" TextWrapping="Wrap"
-                                 Foreground="{DynamicResource AppText}" />
-                      <ToggleButton Name="Disclose"
-                                    Theme="{StaticResource DisclosureToggle}"
-                                    IsVisible="{Binding HasDetail}"
-                                    Content="Details" />
-                      <TextBlock Text="{Binding Detail}" FontSize="11" TextWrapping="Wrap"
-                                 Margin="7,2,0,2"
-                                 IsVisible="{Binding #Disclose.IsChecked}"
-                                 Foreground="{DynamicResource AppTextMuted}" />
-                    </StackPanel>
-                  </Border>
-                </DataTemplate>
-              </ItemsControl.ItemTemplate>
-            </ItemsControl>
           </ScrollViewer>
 
         </DockPanel>

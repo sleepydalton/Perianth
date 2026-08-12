@@ -71,6 +71,8 @@ public sealed record Note(NoteKind Kind, string Summary, string? Detail)
                 "One part was left out: reconciling its texture repeat would have baked an image past the size cap.",
             DiagnosticIds.ExtractionPathNotPortable =>
                 "Some extracted paths are longer than Windows accepts by default.",
+            DiagnosticIds.ClipHasNoMotion =>
+                "The animation chosen holds a pose rather than moving, so the export is a still model.",
             DiagnosticIds.ExtractionCancelled =>
                 "Stopped partway. What was written is complete and listed in the manifest.",
             _ => null,

@@ -8,11 +8,27 @@ using Perianth.Formats.Diagnostics;
 namespace Perianth.Core.Pose;
 
 /// <summary>
-/// A posed scene together with the clip animation that drives it.
+/// A posed scene together with the animations that drive it.
 /// </summary>
-/// <param name="Scene">The resting pose — the clip's first sample — and its hierarchy.</param>
-/// <param name="Animation">The one clip animation, its tracks addressing the scene's nodes.</param>
-public sealed record AnimatedScene(PosedScene Scene, Animation Animation);
+/// <param name="Scene">The resting pose — the first animation's first sample — and its hierarchy.</param>
+/// <param name="Animations">
+/// The animations, in the order asked for, their tracks addressing the scene's
+/// nodes. One is the ordinary case; several become several Actions in Blender.
+/// </param>
+public sealed record AnimatedScene(PosedScene Scene, ImmutableArray<Animation> Animations);
+
+/// <summary>
+/// One animation to attach, and the name it will carry in the exported file.
+/// </summary>
+/// <remarks>
+/// The name comes from the caller because an ANIM does not contain one, and
+/// because it is the only handle a user has: a viewer lists Actions by name, so
+/// a path would be unreadable and an ordinal would be meaningless. Core will not
+/// invent one from a file path — that is a front end's business.
+/// </remarks>
+/// <param name="Name">What the animation is called in the exported file.</param>
+/// <param name="Animation">The clip ANIM itself.</param>
+public sealed record NamedClip(string Name, AnimFile Animation);
 
 /// <summary>
 /// Attaches a clip as native local-TRS animation, one track per channel the clip
@@ -29,64 +45,130 @@ public sealed record AnimatedScene(PosedScene Scene, Animation Animation);
 /// </remarks>
 public static class ClipAnimation
 {
+    /// <summary>
+    /// The name a lone animation carries, kept because it is observable output:
+    /// it is what a viewer's Action list shows, and what the baseline records.
+    /// </summary>
+    private const string SingleName = "clip";
+
+    /// <summary>
+    /// At or above this, the selector is a marker rather than a value: 0xFFFF
+    /// leaves the channel alone and 0xFFFE hides the node. Neither names a
+    /// transform to read, and hiding is carried by the visibility tracks instead.
+    /// </summary>
+    private const ushort Marker = 0xFFFE;
+
+    /// <summary>At or above this, the selector names one value rather than a stream.</summary>
+    private const ushort Constant = 0x8000;
+
     private static readonly AnimChannel[] Channels = [AnimChannel.Translation, AnimChannel.Rotation, AnimChannel.Scale];
     private static readonly TrackPath[] Paths = [TrackPath.Translation, TrackPath.Rotation, TrackPath.Scale];
 
     /// <summary>Animates <paramref name="model"/> under <paramref name="setup"/> with <paramref name="clip"/>.</summary>
     public static Result<AnimatedScene> Animate(GeometryModel model, AnimFile setup, AnimFile clip)
     {
+        ArgumentNullException.ThrowIfNull(clip);
+        return Animate(model, setup, [new NamedClip(SingleName, clip)]);
+    }
+
+    /// <summary>
+    /// Animates <paramref name="model"/> under <paramref name="setup"/> with every
+    /// animation in <paramref name="clips"/>, as one scene carrying several.
+    /// </summary>
+    /// <remarks>
+    /// Two things differ from the single case, and both follow from one scene
+    /// having to serve every animation at once.
+    /// <para>
+    /// <b>The parts are the union.</b> Each animation shows its own set — a
+    /// character's front-facing idle and its back-facing one do not agree — so a
+    /// scene built from any one of them would be missing pieces under the others.
+    /// The mesh set is therefore every part any animation shows, and each
+    /// animation hides what it does not use through its visibility tracks.
+    /// </para>
+    /// <para>
+    /// <b>A channel any animation sets gets a track in all of them.</b> With one
+    /// animation the constants are baked into the scene graph and need no track.
+    /// With several, the graph can only hold the first one's, so an animation that
+    /// leaves a channel alone must still state the value it wants, or the previous
+    /// Action's pose would show through. The union is taken over what each
+    /// animation <em>sets</em> — anything but a sentinel — so channels no
+    /// animation touches still cost nothing.
+    /// </para>
+    /// </remarks>
+    public static Result<AnimatedScene> Animate(
+        GeometryModel model, AnimFile setup, ImmutableArray<NamedClip> clips,
+        bool queued = false, string name = "queue", bool allowMissingParts = false)
+    {
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(setup);
-        ArgumentNullException.ThrowIfNull(clip);
 
-        if (clip.SampleCount == 0)
+        if (clips.IsDefaultOrEmpty)
         {
-            return Refusal.Unsupported("The clip ANIM contains no stored samples.");
+            return Refusal.Unsupported("No animation was given to animate with.");
         }
 
-        if (!(double.IsFinite(clip.Fps) && clip.Fps > 0.0))
+        foreach (NamedClip named in clips)
         {
-            return Refusal.Malformed("The ANIM sampling rate is invalid.");
+            if (named.Animation.SampleCount == 0)
+            {
+                return Refusal.Unsupported("The clip ANIM contains no stored samples.");
+            }
+
+            if (!(double.IsFinite(named.Animation.Fps) && named.Animation.Fps > 0.0))
+            {
+                return Refusal.Malformed("The ANIM sampling rate is invalid.");
+            }
         }
 
-        Result<PoseSampling.Association> association = PoseSampling.Associate(model, setup);
+        Result<PoseSampling.Association> association =
+            PoseSampling.Associate(model, setup, allowMissingParts);
         if (!association.TryGetValue(out PoseSampling.Association bindings, out Refusal? associateRefusal))
         {
             return associateRefusal;
         }
 
-        // Every sample's composed pose and visibility, indexed [sample][node].
-        PoseSampling.LocalPose[][] sampled = new PoseSampling.LocalPose[clip.SampleCount][];
-        bool[][] visible = new bool[clip.SampleCount][];
-        for (int sample = 0; sample < clip.SampleCount; sample++)
+        // Every animation's every sample, indexed [animation][sample][node].
+        PoseSampling.LocalPose[][][] sampledPer = new PoseSampling.LocalPose[clips.Length][][];
+        bool[][][] visiblePer = new bool[clips.Length][][];
+        for (int c = 0; c < clips.Length; c++)
         {
-            // Double throughout: dividing by the float fps loses precision and can
-            // push the last sample a hair past the end when multiplied back.
-            double seconds = sample / (double)clip.Fps;
-
-            Result<PoseSampling.LocalPose[]> pose = PoseSampling.PoseValues(setup, clip, seconds);
-            if (!pose.TryGetValue(out PoseSampling.LocalPose[]? local, out Refusal? poseRefusal))
+            AnimFile clip = clips[c].Animation;
+            PoseSampling.LocalPose[][] sampled = new PoseSampling.LocalPose[clip.PlayableSamples][];
+            bool[][] visible = new bool[clip.PlayableSamples][];
+            for (int sample = 0; sample < clip.PlayableSamples; sample++)
             {
-                return poseRefusal;
+                // Double throughout: dividing by the float fps loses precision and can
+                // push the last sample a hair past the end when multiplied back.
+                double seconds = sample / (double)clip.Fps;
+
+                Result<PoseSampling.LocalPose[]> pose = PoseSampling.PoseValues(setup, clip, seconds);
+                if (!pose.TryGetValue(out PoseSampling.LocalPose[]? local, out Refusal? poseRefusal))
+                {
+                    return poseRefusal;
+                }
+
+                Result<bool[]> vis = PoseSampling.Visibility(setup, clip, seconds);
+                if (!vis.TryGetValue(out bool[]? visibility, out Refusal? visRefusal))
+                {
+                    return visRefusal;
+                }
+
+                sampled[sample] = local;
+                visible[sample] = visibility;
             }
 
-            Result<bool[]> vis = PoseSampling.Visibility(setup, clip, seconds);
-            if (!vis.TryGetValue(out bool[]? visibility, out Refusal? visRefusal))
-            {
-                return visRefusal;
-            }
-
-            sampled[sample] = local;
-            visible[sample] = visibility;
+            sampledPer[c] = sampled;
+            visiblePer[c] = visible;
         }
 
-        Result<bool> composed = PoseSampling.ValidateWorldComposition(setup, sampled[0]);
+        Result<bool> composed = PoseSampling.ValidateWorldComposition(setup, sampledPer[0][0]);
         if (!composed.IsSuccess)
         {
             return composed.Refusal;
         }
 
-        // A part is drawn if it is rigged and visible in at least one sample.
+        // A part is drawn if it is rigged and visible in at least one sample of at
+        // least one animation.
         ImmutableArray<int>.Builder keepBuilder = ImmutableArray.CreateBuilder<int>();
         for (int part = 0; part < model.Parts.Length; part++)
         {
@@ -97,12 +179,15 @@ public static class ClipAnimation
             }
 
             bool everVisible = false;
-            for (int sample = 0; sample < clip.SampleCount; sample++)
+            for (int c = 0; c < clips.Length && !everVisible; c++)
             {
-                if (visible[sample][node])
+                foreach (bool[] visibility in visiblePer[c])
                 {
-                    everVisible = true;
-                    break;
+                    if (visibility[node])
+                    {
+                        everVisible = true;
+                        break;
+                    }
                 }
             }
 
@@ -114,7 +199,7 @@ public static class ClipAnimation
 
         ImmutableArray<int> keep = keepBuilder.ToImmutable();
 
-        Result<bool> hidden = PoseSampling.RefuseIfClipHidEverything(setup, clip, keep, bindings.NodeOfPart, withoutClipSeconds: 0.0);
+        Result<bool> hidden = PoseSampling.RefuseIfClipHidEverything(setup, clips[0].Animation, keep, bindings.NodeOfPart, withoutClipSeconds: 0.0);
         if (!hidden.IsSuccess)
         {
             return hidden.Refusal;
@@ -122,43 +207,171 @@ public static class ClipAnimation
 
         if (keep.Length == 0)
         {
-            return Refusal.Unsupported("The setup hierarchy and visibility select no mesh parts.");
+            return Refusal.Unsupported(
+                "The setup hierarchy and visibility select no mesh parts.",
+                DiagnosticIds.PoseSelectsNothing);
         }
 
-        Result<ImmutableArray<float>> timesResult = PoseSampling.SampleTimes(clip);
-        if (!timesResult.TryGetValue(out ImmutableArray<float> times, out Refusal? timesRefusal))
+        // The scene bakes the first animation's opening frame, so a viewer that
+        // ignores animation still shows a coherent one.
+        AnimVec3[] attachmentScales = new AnimVec3[keep.Length];
+        for (int attachment = 0; attachment < keep.Length; attachment++)
         {
-            return timesRefusal;
+            attachmentScales[attachment] =
+                visiblePer[0][0][bindings.NodeOfPart[keep[attachment]]] ? AnimVec3.One : AnimVec3.Zero;
         }
 
-        List<AnimationTrack> tracks = TransformTracks(setup, clip, sampled);
-        AnimVec3[] attachmentScales = PoseSampling.AttachmentScales(keep, bindings.NodeOfPart, visible, setup.NodeCount, tracks);
+        bool[]? forced = clips.Length > 1 ? ChannelsAnySets(setup, clips) : null;
 
-        if (tracks.Count == 0)
+        ImmutableArray<Animation>.Builder animations = ImmutableArray.CreateBuilder<Animation>(queued ? 1 : clips.Length);
+        int totalTracks = 0;
+
+        if (queued && clips.Length > 1)
         {
-            return Refusal.Unsupported("The clip ANIM contains no animated transform or visibility channels.");
+            // One timeline: every clip's samples end to end, each starting a frame
+            // after the last one closed. Laying the samples out first and building
+            // tracks from the whole run — rather than joining finished tracks —
+            // is what keeps quaternions sign-continuous across a seam, so a
+            // sampler slerps the short way there as it does everywhere else.
+            List<PoseSampling.LocalPose[]> runSamples = [];
+            List<bool[]> runVisible = [];
+            ImmutableArray<float>.Builder runTimes = ImmutableArray.CreateBuilder<float>();
+            double offset = 0.0;
+
+            for (int c = 0; c < clips.Length; c++)
+            {
+                AnimFile clip = clips[c].Animation;
+                for (int sample = 0; sample < clip.PlayableSamples; sample++)
+                {
+                    runSamples.Add(sampledPer[c][sample]);
+                    runVisible.Add(visiblePer[c][sample]);
+                    runTimes.Add((float)(offset + (sample / (double)clip.Fps)));
+                }
+
+                // The next clip opens one frame interval after this one's last
+                // sample, not on top of it: a shared instant would be two values
+                // at one time, and a longer gap would read as a pause nobody
+                // asked for.
+                offset += clip.PlayableSamples / (double)clip.Fps;
+            }
+
+            ImmutableArray<float> joined = runTimes.ToImmutable();
+            for (int i = 1; i < joined.Length; i++)
+            {
+                if (joined[i] <= joined[i - 1])
+                {
+                    return Refusal.Unsupported(
+                        "Two frames of the queued animations fall at the same moment, so they cannot share one timeline.");
+                }
+            }
+
+            List<AnimationTrack> queuedTracks = TransformTracks(setup, clip: null, [.. runSamples], forced);
+            PoseSampling.VisibilityTracks(keep, bindings.NodeOfPart, [.. runVisible], setup.NodeCount, attachmentScales, queuedTracks);
+
+            totalTracks = queuedTracks.Count;
+            animations.Add(new Animation(name, joined, [.. queuedTracks]));
+        }
+        else
+        {
+            for (int c = 0; c < clips.Length; c++)
+            {
+                NamedClip named = clips[c];
+                Result<ImmutableArray<float>> perTimes = PoseSampling.SampleTimes(named.Animation);
+                if (!perTimes.TryGetValue(out ImmutableArray<float> clipTimes, out Refusal? perTimesRefusal))
+                {
+                    return perTimesRefusal;
+                }
+
+                List<AnimationTrack> clipTracks = TransformTracks(setup, named.Animation, sampledPer[c], forced);
+                PoseSampling.VisibilityTracks(keep, bindings.NodeOfPart, visiblePer[c], setup.NodeCount, attachmentScales, clipTracks);
+
+                totalTracks += clipTracks.Count;
+                animations.Add(new Animation(named.Name, clipTimes, [.. clipTracks]));
+            }
         }
 
-        SceneGraph graph = PoseSampling.BuildGraph(model, setup, sampled[0], bindings.NodeOfPart, keep, attachmentScales);
-        Animation animation = new("clip", times, [.. tracks]);
-        return Result.Ok(new AnimatedScene(new PosedScene(keep, graph, bindings.Unrigged), animation));
+        // Nothing to animate at all. This is not a failure: the scene already
+        // holds the pose these animations set, so the export is exactly what was
+        // asked for minus the moving part, and it goes out with a warning saying
+        // so. It used to refuse, which was wrong twice over — the same file works
+        // when picked alongside another, and the pose was always exportable by
+        // unticking a box the refusal did not name.
+        if (totalTracks == 0)
+        {
+            return Result.Ok(new AnimatedScene(
+                new PosedScene(
+                    keep,
+                    PoseSampling.BuildGraph(model, setup, sampledPer[0][0], bindings.NodeOfPart, keep, attachmentScales),
+                    bindings.Unrigged),
+                []));
+        }
+
+        SceneGraph graph = PoseSampling.BuildGraph(model, setup, sampledPer[0][0], bindings.NodeOfPart, keep, attachmentScales);
+        return Result.Ok(new AnimatedScene(new PosedScene(keep, graph, bindings.Unrigged), animations.MoveToImmutable()));
     }
 
-    private static List<AnimationTrack> TransformTracks(AnimFile setup, AnimFile clip, PoseSampling.LocalPose[][] sampled)
+    /// <summary>
+    /// Which node-and-channel pairs at least one of <paramref name="clips"/> sets,
+    /// as a flat <c>node * Channels.Length + channel</c> map.
+    /// </summary>
+    /// <remarks>
+    /// A sentinel means "leave this alone", so anything else — an animated
+    /// selector or a constant one — is the animation stating a value. Those are
+    /// the channels that have to appear in every animation, because one of them
+    /// moving a node means the others must say where they want it instead of
+    /// inheriting whatever the previous Action left behind.
+    /// </remarks>
+    private static bool[] ChannelsAnySets(AnimFile setup, ImmutableArray<NamedClip> clips)
+    {
+        bool[] forced = new bool[setup.NodeCount * Channels.Length];
+        foreach (NamedClip named in clips)
+        {
+            for (int node = 0; node < setup.NodeCount; node++)
+            {
+                if (!named.Animation.TryGetNode(setup.Names[node], out int clipNode))
+                {
+                    continue;
+                }
+
+                for (int channel = 0; channel < Channels.Length; channel++)
+                {
+                    if (named.Animation.Selector(Channels[channel], clipNode) < Marker)
+                    {
+                        forced[(node * Channels.Length) + channel] = true;
+                    }
+                }
+            }
+        }
+
+        return forced;
+    }
+
+    private static List<AnimationTrack> TransformTracks(
+        AnimFile setup, AnimFile? clip, PoseSampling.LocalPose[][] sampled, bool[]? forced)
     {
         List<AnimationTrack> tracks = [];
         for (int node = 0; node < setup.NodeCount; node++)
         {
-            if (!clip.TryGetNode(setup.Names[node], out int clipNode))
+            // The forced map is indexed by setup node and already accounts for
+            // every clip, so a queued run needs no clip of its own to consult.
+            int clipNode = -1;
+            if (forced is null && !clip!.TryGetNode(setup.Names[node], out clipNode))
             {
                 continue;
             }
 
             for (int channel = 0; channel < Channels.Length; channel++)
             {
-                // Only a channel the clip itself animates gets a track; anything
-                // else holds the resting pose.
-                if (clip.Selector(Channels[channel], clipNode) >= 0x8000)
+                // With one animation, only a channel the clip itself animates gets
+                // a track; anything else holds the resting pose the graph bakes.
+                // With several, any channel some animation sets is written by all
+                // of them — see the remarks on Animate for why inheriting is not
+                // an option once a scene serves more than one Action.
+                bool wanted = forced is null
+                    ? clip!.Selector(Channels[channel], clipNode) < Constant
+                    : forced[(node * Channels.Length) + channel];
+
+                if (!wanted)
                 {
                     continue;
                 }

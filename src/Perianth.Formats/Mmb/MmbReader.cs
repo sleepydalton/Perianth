@@ -35,7 +35,6 @@ namespace Perianth.Formats.Mmb;
 public static class MmbReader
 {
     private const int MinimumLabelLength = 1;
-    private const int MaximumLabelLength = 240;
     private const int ValueCount = 12;
     private const float ValueMagnitudeLimit = 1e6f;
     private const int DeclarationStride = 4;
@@ -106,7 +105,16 @@ public static class MmbReader
             return false;
         }
 
-        if (labelLength is < MinimumLabelLength or > MaximumLabelLength)
+        // There is no upper bound on the label beyond the file itself. The
+        // reference capped it at 240 bytes, which hid ten of the corpus's models
+        // behind a constant nothing justified: labels reach 447 bytes, and the
+        // longest belong to real model parts whose absence made four constant
+        // pools look too long. A cap also protects nothing the printable-ASCII
+        // check below does not protect better — every byte of a label must be
+        // printable, so a false match gets exponentially less likely as the
+        // claimed length grows, and it is the *short* candidates that are easy
+        // to forge. TryReadBytes is what keeps the read in bounds.
+        if (labelLength < MinimumLabelLength)
         {
             return false;
         }

@@ -412,7 +412,16 @@ public static class MaterialEdit
     /// </remarks>
     /// <param name="model">The model's name, used only to keep paths apart.</param>
     /// <param name="original">The texture being replaced, for its stem.</param>
-    public static string ProposePath(string model, string original)
+    /// <param name="parts">
+    /// The sections the edit is restricted to, or null for all of them. Naming
+    /// parts makes the edit about <em>those</em> parts, so the proposal has to
+    /// differ from the one for other parts of the same texture. Without this,
+    /// giving two parts of one paper sheet two different images proposes one
+    /// path for both: the second image lands on it, and the first part changes
+    /// with it because it was already pointed there. Reported by a user, whose
+    /// workaround — clearing the path box between additions — was the diagnosis.
+    /// </param>
+    public static string ProposePath(string model, string original, IReadOnlyCollection<int>? parts = null)
     {
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(original);
@@ -426,7 +435,13 @@ public static class MaterialEdit
             stem = stem[..dot];
         }
 
-        return $"camel/baked/assets/textures/perianth/{Safe(model, "model")}/{Safe(stem, "texture")}.dds";
+        // Ordered, so that "47,51" and "51,47" are one aim rather than two
+        // paths for one edit.
+        string aimed = parts is { Count: > 0 }
+            ? $"{stem}_part_{string.Join('_', parts.Order())}"
+            : stem;
+
+        return $"camel/baked/assets/textures/perianth/{Safe(model, "model")}/{Safe(aimed, "texture")}.dds";
     }
 
     /// <summary>
@@ -516,11 +531,13 @@ public static class MaterialEdit
             : path.Replace('/', '\\');
 
     private static Refusal NothingMatched(string path, IReadOnlyCollection<int>? sections) =>
-        Refusal.Unsupported(sections is null
-            ? string.Create(CultureInfo.InvariantCulture, $"Nothing in this editordata binds {path}.")
-            : string.Create(
-                CultureInfo.InvariantCulture,
-                $"Nothing in the {sections.Count} named sections binds {path}."));
+        Refusal.Unsupported(
+            sections is null
+                ? string.Create(CultureInfo.InvariantCulture, $"Nothing in this editordata binds {path}.")
+                : string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Nothing in the {sections.Count} named sections binds {path}."),
+            DiagnosticIds.MaterialEditMatchedNothing);
 
     private static Result<Refusal?> Scope(EditordataFile file, IReadOnlyCollection<int>? sections)
     {
