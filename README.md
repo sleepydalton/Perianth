@@ -25,6 +25,9 @@ back-ups before usage.**
 > Extracting, Editing, or Modding the game or its assets or files may violate
 > its EULA - use at your own risk.
 
+**This tool is intended for use on officially released game content that you legally own.**
+**I do not condone its use on leaked, unreleased, or pirated builds.**
+
 ## How To Get The Tool
 
 Download the build for your platform and run it. Nothing to install: each
