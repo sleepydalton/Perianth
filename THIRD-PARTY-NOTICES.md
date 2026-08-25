@@ -7,9 +7,7 @@ it, and this file is how.
 The command-line build carries none of these — it uses only the .NET runtime.
 Everything here comes with the window.
 
-Every package in the dependency graph declares **MIT**. That was read from the
-packages themselves rather than assumed, so this list is what is actually
-shipped rather than what was intended.
+Every package in the dependency graph declares **MIT**.
 
 ## Avalonia
 

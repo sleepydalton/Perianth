@@ -21,3 +21,93 @@ artifacts/
 *.sdfdata
 *.sdftoc
 *.mshader
+
+# The rest of what the archives ship. The list above was written when the tool
+# read eight formats; it now reads, writes or extracts most of these, and an
+# extraction writes a tree of whatever the author asked for. Taken from the
+# shipped archives themselves rather than from what the code names, so a format
+# nothing here parses yet is still refused entry.
+#
+# Deliberately absent are the extensions a source repository legitimately uses
+# — .json, .txt, .xml, .csv, .html, .css, .bat, .cfg, .dat, .bin, .h, .map —
+# even though the archives hold files with those names too. An ignore rule that
+# hides a file somebody meant to commit is worse than one that misses a file the
+# content scan will catch.
+*.fruit
+*.juice
+*.locpack
+*.locpackbin
+*.manimevent
+*.manimsync
+*.manimsys
+*.mbakedlayers
+*.mbehavior
+*.mcache
+*.mcelllogic
+*.mcompoundnode
+*.mcoonstagram
+*.mdependencyrules
+*.mdestructionstate
+*.menvironment
+*.mgraphobject
+*.mitem
+*.mitemcomponenttype
+*.mkeybinds
+*.mknockbackchainmultiplier
+*.mlapdance
+*.mlayer
+*.mlevel
+*.mlevelbasedcombatlookuptable
+*.mleveltemplate
+*.mlocationeffect
+*.mma
+*.mmission
+*.mnpc
+*.mparticles
+*.mphys
+*.mplayer
+*.mpower
+*.mprimarystats
+*.mprojectile
+*.mrte
+*.mscript
+*.msequence
+*.mshadergraph
+*.mshaders
+*.mskillscriptgraph
+*.mskillscriptjuice
+*.mticket
+*.muigraph
+*.muiprefab
+*.mvar
+*.mvendorconfig
+*.mwidget
+*.opencl
+*.pngcache
+*.prefabs
+*.seqcam
+*.sounddata
+*.spritesheet
+
+# Media and fonts the archives ship. Force-add with `git add -f` if this
+# repository ever wants an icon or a font of its own; nothing does today, and
+# an extracted texture landing here silently is the failure worth preventing.
+*.bik
+*.bk2
+*.bnk
+*.fontmetrics
+*.otf
+*.png
+*.psd
+*.tga
+*.tif
+*.ttf
+*.sdfver
+
+# What this tool's own commands leave behind. An extraction mirrors the
+# archive's paths, so it writes a `camel/` tree wherever it is run — including
+# here, when a working directory is not what it was assumed to be. That has
+# happened.
+/camel/
+perianth-extraction.json
+manifest.ini
