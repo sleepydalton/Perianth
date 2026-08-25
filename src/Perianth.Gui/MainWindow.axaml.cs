@@ -159,6 +159,71 @@ public sealed partial class MainWindow : Window
             }
         };
 
+        _model.Shape.ChooseRequested += async () =>
+        {
+            try
+            {
+                IReadOnlyList<IStorageFile> chosen = await StorageProvider.OpenFilePickerAsync(
+                    new FilePickerOpenOptions
+                    {
+                        Title = "Choose the reshaped model",
+                        AllowMultiple = false,
+                        FileTypeFilter = [GlbFiles],
+                    }).ConfigureAwait(true);
+
+                if (chosen.Count > 0 && chosen[0].TryGetLocalPath() is string path)
+                {
+                    await _model.Shape.LoadAsync(path).ConfigureAwait(true);
+                }
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
+            {
+            }
+        };
+
+        _model.Shape.SaveRequested += async () =>
+        {
+            string? folder = await AskForFolderAsync("Where to write the mod folder").ConfigureAwait(true);
+            if (folder is not null)
+            {
+                _model.Shape.SaveInto(folder);
+            }
+        };
+
+        _model.New.ChooseMeshRequested += async () =>
+        {
+            try
+            {
+                IReadOnlyList<IStorageFile> chosen = await StorageProvider.OpenFilePickerAsync(
+                    new FilePickerOpenOptions
+                    {
+                        Title = "Choose your mesh",
+                        AllowMultiple = false,
+                        FileTypeFilter = [GlbFiles],
+                    }).ConfigureAwait(true);
+
+                if (chosen.Count > 0 && chosen[0].TryGetLocalPath() is string path)
+                {
+                    _model.New.UseMesh(path);
+                }
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
+            {
+            }
+        };
+
+        _model.New.SaveRequested += async () =>
+        {
+            string? folder = await AskForFolderAsync("Where to write the mod folder").ConfigureAwait(true);
+            if (folder is not null)
+            {
+                // The mod takes the name of the thing, which is the only name
+                // this pane has asked for. A second box for a folder name would
+                // be a question with one sensible answer.
+                await _model.New.SaveAsync(folder, _model.New.Name).ConfigureAwait(true);
+            }
+        };
+
         _model.Texture.PatchRequested += async () =>
         {
             string? folder = await AskForFolderAsync("Where to write the patches").ConfigureAwait(true);
@@ -168,6 +233,13 @@ public sealed partial class MainWindow : Window
             }
         };
     }
+
+    /// <summary>What Blender writes back out.</summary>
+    private static FilePickerFileType GlbFiles => new("glTF binary")
+    {
+        Patterns = ["*.glb"],
+        MimeTypes = ["model/gltf-binary"],
+    };
 
     private static FilePickerFileType PngFiles => new("PNG images")
     {

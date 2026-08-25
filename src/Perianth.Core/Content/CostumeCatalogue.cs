@@ -36,14 +36,30 @@ public sealed record CostumePiece(string Kind, string ModelPath);
 /// always <c>NoTint</c>; for a hairstyle it is the hair colour, and without it
 /// hair draws as the near-white sheet its texture actually is.
 /// </param>
+/// <param name="Outfit">
+/// Which of the character's outfits this belongs to — <c>Hero</c>, <c>Street</c>
+/// or <c>Backstory</c>, or <see cref="CostumeCatalogue.EveryOutfit"/> for a
+/// piece worn with all of them. The game's own <c>myCostumeType</c>.
+/// </param>
+/// <param name="SourcePath">
+/// The archive path of the file declaring this entry. Carried because authoring
+/// needs it: making a new piece means copying a shipped declaration, and this is
+/// the only thing that knows which file each entry came from.
+/// </param>
 public sealed record CostumeItem(
     string Name,
     string Slot,
     string Kind,
     ImmutableArray<CostumePiece> Variants,
     ImmutableArray<string> Hides,
-    ImmutableArray<string> Tints)
+    ImmutableArray<string> Tints,
+    string Outfit = CostumeCatalogue.EveryOutfit,
+    string SourcePath = "")
 {
+    /// <summary>Whether this belongs to one outfit rather than to all of them.</summary>
+    public bool IsExclusive =>
+        !string.Equals(Outfit, CostumeCatalogue.EveryOutfit, StringComparison.Ordinal);
+
     /// <summary>
     /// Whether wearing this takes the character's own parts off underneath.
     /// </summary>
@@ -141,6 +157,16 @@ public static partial class CostumeCatalogue
     /// </remarks>
     public const string SchemaFile = "camel/game system data/fruit/items/items.fruit";
 
+    /// <summary>
+    /// The <c>myCostumeType</c> of a piece worn whatever else is on.
+    /// </summary>
+    /// <remarks>
+    /// Hair, facial hair, eyewear and makeup, in the main; 141 of the 408
+    /// entries. The other three values name an outfit, and two outfits are
+    /// never worn at once — see <see cref="Outfit"/>.
+    /// </remarks>
+    public const string EveryOutfit = "All";
+
     private const string ItemExtension = ".mitem";
     private const string TypePrefix = "CostumeItem";
     private const string NoSlot = "None";
@@ -227,6 +253,19 @@ public static partial class CostumeCatalogue
     [GeneratedRegex(@"myDefaultTint\d\s+(?<uid>[0-9A-Fa-f]+)", RegexOptions.CultureInvariant)]
     private static partial Regex DefaultTint { get; }
 
+    /// <summary>
+    /// Which outfit a class or a record belongs to.
+    /// </summary>
+    /// <remarks>
+    /// Declared per class and overridden per record, exactly as
+    /// <see cref="HideSlot"/> is. 23 records override it and every one of them
+    /// moves a shared piece into the hero outfit — nine eyewear and fourteen
+    /// accent makeup, which are parts of a costume rather than choices of their
+    /// own.
+    /// </remarks>
+    [GeneratedRegex(@"myCostumeType\s+(?<outfit>\w+)", RegexOptions.CultureInvariant)]
+    private static partial Regex CostumeType { get; }
+
     /// <summary>One class in the schema: its name, what it extends, and its body.</summary>
     [GeneratedRegex(
         @"^class\s+(?<name>\w+)\s*(?::\s*(?<base>\w+))?\s*\{(?<body>.*?)^\}",
@@ -239,9 +278,23 @@ public static partial class CostumeCatalogue
         string Id,
         string Name,
         string? ModelPath,
+        string SourcePath,
         ImmutableArray<string> Owns,
         Dictionary<int, string> Hides,
-        ImmutableArray<string> Tints);
+        ImmutableArray<string> Tints,
+        string? Outfit);
+
+    /// <summary>
+    /// What the schema declares per class: the hide slots, and the outfit.
+    /// </summary>
+    /// <remarks>
+    /// Both are defaults a record may write over, and both are inherited, so
+    /// they are resolved together in one walk rather than in two that could
+    /// disagree about what a class extends.
+    /// </remarks>
+    private sealed record Defaults(
+        Dictionary<string, Dictionary<int, string>> Hides,
+        Dictionary<string, string> Outfits);
 
     /// <summary>
     /// Everything wearable the archives describe, in the order the game's own
@@ -280,7 +333,7 @@ public static partial class CostumeCatalogue
 
             if (bytes is not null)
             {
-                Collect(Encoding.UTF8.GetString(bytes), records);
+                Collect(Encoding.UTF8.GetString(bytes), path, records);
             }
         }
 
@@ -300,8 +353,8 @@ public static partial class CostumeCatalogue
             return schemaRefusal;
         }
 
-        Dictionary<string, Dictionary<int, string>> schema = schemaBytes is null
-            ? []
+        Defaults schema = schemaBytes is null
+            ? new Defaults([], [])
             : Schema(Encoding.UTF8.GetString(schemaBytes));
 
         return Result.Ok(Assemble(records, schema));
@@ -319,6 +372,21 @@ public static partial class CostumeCatalogue
     /// <summary>One model to draw, and whether it replaces what is under it.</summary>
     public readonly record struct CostumeDrawn(string ModelPath, bool Replaces);
 
+    /// <summary>What became of one worn entry, and what decided it.</summary>
+    /// <param name="Item">The entry as it was chosen.</param>
+    /// <param name="Piece">The model that will be drawn, or null for none.</param>
+    /// <param name="Replaces">Whether it takes the character's own parts off underneath.</param>
+    /// <param name="Blocked">
+    /// Which of this entry's own kinds another piece hid. Empty means nothing
+    /// interfered; every one of them beside a null <paramref name="Piece"/> is an
+    /// outfit that leaves the entry nowhere to go.
+    /// </param>
+    public readonly record struct CostumeOutcome(
+        CostumeItem Item,
+        CostumePiece? Piece,
+        bool Replaces,
+        ImmutableArray<string> Blocked);
+
     /// <summary>
     /// The models to draw for a set of chosen pieces: one per piece, minus
     /// whatever another piece covers over entirely.
@@ -335,12 +403,93 @@ public static partial class CostumeCatalogue
     /// when chosen.
     /// </para>
     /// </remarks>
-    public static ImmutableArray<CostumeDrawn> Wear(IEnumerable<CostumeWorn> worn)
+    public static ImmutableArray<CostumeDrawn> Wear(IEnumerable<CostumeWorn> worn) =>
+    [
+        .. Explain(worn)
+            .Where(outcome => outcome.Piece is not null)
+            .Select(outcome => new CostumeDrawn(outcome.Piece!.ModelPath, outcome.Replaces)),
+    ];
+
+    /// <summary>
+    /// The one outfit a set of pieces belongs to, or a refusal naming the two
+    /// that cannot be worn together.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The character has three outfits — <c>Hero</c>, <c>Street</c> and
+    /// <c>Backstory</c> — and wears one at a time. Everything else is
+    /// <see cref="EveryOutfit"/> and goes with whichever is on: hair, facial
+    /// hair, eyewear, makeup. That is the game's own <c>myCostumeType</c>,
+    /// declared per class and overridden by 23 records, not a reading of the
+    /// slot names.
+    /// </para>
+    /// <para>
+    /// <b>It matters because two outfits at once is a second body.</b> Each of
+    /// the three has a head, a body and a pair of hands, and each replaces the
+    /// character's own parts where it draws — so wearing a hero body over a
+    /// street body puts 148 meshes on a chest joint that holds three, one suit
+    /// inside another. The reports were "an extra floating pair of hands" and
+    /// "the outfit is not visible from the reverse", which are the front and the
+    /// back of that one fault.
+    /// </para>
+    /// <para>
+    /// <b>Refused rather than resolved</b>, because nothing says which of the
+    /// two the wearer meant. Dropping one silently is the failure this whole
+    /// section exists to avoid: an outfit that vanishes with nothing saying why.
+    /// </para>
+    /// </remarks>
+    public static Result<string> Outfit(IEnumerable<CostumeItem> worn)
+    {
+        ArgumentNullException.ThrowIfNull(worn);
+
+        CostumeItem? first = null;
+        foreach (CostumeItem item in worn)
+        {
+            if (!item.IsExclusive)
+            {
+                continue;
+            }
+
+            if (first is null)
+            {
+                first = item;
+                continue;
+            }
+
+            if (!string.Equals(first.Outfit, item.Outfit, StringComparison.Ordinal))
+            {
+                return Refusal.Unsupported(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"'{first.Name}' belongs to the {first.Outfit} outfit and '{item.Name}' to the {item.Outfit} one, and a character wears one outfit at a time. Worn together they draw two bodies in one place, so take one of them off."));
+            }
+        }
+
+        return Result.Ok(first?.Outfit ?? EveryOutfit);
+    }
+
+    /// <summary>
+    /// The same decision as <see cref="Wear"/>, with what it left out and why.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the implementation and <see cref="Wear"/> is a view over it</b>,
+    /// so the account cannot drift from what actually gets drawn. Two
+    /// implementations of one rule is how an explanation comes to describe
+    /// something the tool no longer does.
+    /// </para>
+    /// <para>
+    /// It exists because every one of these decisions is invisible in the
+    /// output: a hairstyle that produced no model and a hairstyle nobody chose
+    /// look identical in a GLB, and the reports that prompted it were all of the
+    /// form "it vanished and nothing said why".
+    /// </para>
+    /// </remarks>
+    public static ImmutableArray<CostumeOutcome> Explain(IEnumerable<CostumeWorn> worn)
     {
         ArgumentNullException.ThrowIfNull(worn);
 
         List<CostumeWorn> chosen = [.. worn];
-        List<CostumeDrawn> drawn = [];
+        List<CostumeOutcome> outcomes = [];
 
         foreach (CostumeWorn one in chosen)
         {
@@ -353,19 +502,44 @@ public static partial class CostumeCatalogue
                 }
             }
 
-            bool covered = hidden.Contains(one.Item.Kind);
-
             // A variant asked for is drawn even where the outfit rules it out:
             // the pane offers it, and silently dropping what somebody chose is
             // worse than showing a combination the game would not.
+            //
+            // **Whether the entry survives is Fits' answer and nothing else's.**
+            // There used to be a check above this for the entry's own kind being
+            // hidden, which dropped it outright. It read every headpiece as
+            // removing every hairstyle, because the schema gives each one
+            // `myHideSlot1 StreetHair` -- the parent category, whose meaning is
+            // "not the whole hairstyle", not "no hair at all". The six cuts
+            // beneath it are separately named, and a headpiece that leaves one
+            // standing means it to be worn. The check made a nonsense of that
+            // and of the four hats that really do hide every cut, which Fits
+            // already answers by running out of variants.
             CostumePiece? draw = one.Variant ?? Fits(one.Item, hidden);
-            if (!covered && draw is not null)
+
+            // Only this entry's own kinds, not everything the outfit hides. What
+            // a headpiece does to eyewear is not why a hairstyle lost a cut.
+            List<string> blocked = [];
+            if (hidden.Contains(one.Item.Kind))
             {
-                drawn.Add(new CostumeDrawn(draw.ModelPath, one.Item.Replaces));
+                blocked.Add(one.Item.Kind);
             }
+
+            foreach (CostumePiece variant in one.Item.Variants)
+            {
+                if (hidden.Contains(variant.Kind) && !blocked.Contains(variant.Kind, StringComparer.Ordinal))
+                {
+                    blocked.Add(variant.Kind);
+                }
+            }
+
+            blocked.Sort(StringComparer.Ordinal);
+
+            outcomes.Add(new CostumeOutcome(one.Item, draw, one.Item.Replaces, [.. blocked]));
         }
 
-        return [.. drawn];
+        return [.. outcomes];
     }
 
     /// <summary>
@@ -439,7 +613,7 @@ public static partial class CostumeCatalogue
     /// piece, and everything left that draws something is an entry.
     /// </summary>
     private static ImmutableArray<CostumeItem> Assemble(
-        List<Parsed> records, Dictionary<string, Dictionary<int, string>> schema)
+        List<Parsed> records, Defaults schema)
     {
         Dictionary<string, Parsed> byId = new(StringComparer.Ordinal);
         foreach (Parsed record in records)
@@ -467,9 +641,15 @@ public static partial class CostumeCatalogue
                 continue;
             }
 
+            // The record's own row wins, then the class default, then "worn
+            // with everything" -- which is what an absent schema leaves, and is
+            // the reading this build had before the field was known about.
+            string outfit = record.Outfit
+                ?? (schema.Outfits.TryGetValue(record.Kind, out string? declared) ? declared : EveryOutfit);
+
             items.Add(new CostumeItem(
                 record.Name, SlotFor(record.Kind), record.Kind, variants,
-                Hidden(record, schema), record.Tints));
+                Hidden(record, schema.Hides), record.Tints, outfit, record.SourcePath));
         }
 
         items.Sort(static (left, right) =>
@@ -525,7 +705,7 @@ public static partial class CostumeCatalogue
     }
 
     /// <summary>
-    /// The schema's hide defaults per class, with inheritance resolved.
+    /// The schema's defaults per class, with inheritance resolved.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -535,50 +715,67 @@ public static partial class CostumeCatalogue
     /// <para>
     /// <b>An absent schema means no defaults, not an error.</b> A mod folder
     /// need not carry one, and the catalogue is still worth having without it —
-    /// it reads then exactly as it did before the file was known about.
+    /// it reads then exactly as it did before the file was known about. Without
+    /// it every entry is <see cref="EveryOutfit"/>, which is the reading this
+    /// build had before the field was known about.
     /// </para>
     /// </remarks>
-    private static Dictionary<string, Dictionary<int, string>> Schema(string text)
+    private static Defaults Schema(string text)
     {
-        Dictionary<string, (string? Base, Dictionary<int, string> Own)> declared = [];
+        Dictionary<string, (string? Base, Dictionary<int, string> Hides, string? Outfit)> declared = [];
         foreach (Match found in SchemaClass.Matches(text))
         {
+            string body = found.Groups["body"].Value;
+
             Dictionary<int, string> own = [];
-            foreach (Match row in HideSlot.Matches(found.Groups["body"].Value))
+            foreach (Match row in HideSlot.Matches(body))
             {
                 own[int.Parse(row.Groups["slot"].Value, CultureInfo.InvariantCulture)] =
                     row.Groups["kind"].Value;
             }
 
-            string name = found.Groups["name"].Value;
-            declared[name] = (found.Groups["base"].Success ? found.Groups["base"].Value : null, own);
+            Match outfit = CostumeType.Match(body);
+            declared[found.Groups["name"].Value] = (
+                found.Groups["base"].Success ? found.Groups["base"].Value : null,
+                own,
+                outfit.Success ? outfit.Groups["outfit"].Value : null);
         }
 
-        Dictionary<string, Dictionary<int, string>> resolved = [];
+        Defaults resolved = new([], []);
 
-        Dictionary<int, string> Walk(string name, int depth)
+        (Dictionary<int, string> Hides, string? Outfit) Walk(string name, int depth)
         {
             // Guarded rather than trusted: a cycle in a declaration this code
             // did not write would otherwise be a hang.
-            if (depth > declared.Count || !declared.TryGetValue(name, out (string? Base, Dictionary<int, string> Own) one))
+            if (depth > declared.Count ||
+                !declared.TryGetValue(name, out (string? Base, Dictionary<int, string> Hides, string? Outfit) one))
             {
-                return [];
+                return ([], null);
             }
 
-            Dictionary<int, string> slots = one.Base is null ? [] : new(Walk(one.Base, depth + 1));
-            foreach ((int slot, string kind) in one.Own)
+            (Dictionary<int, string> above, string? outfit) =
+                one.Base is null ? ([], null) : Walk(one.Base, depth + 1);
+
+            Dictionary<int, string> slots = new(above);
+            foreach ((int slot, string kind) in one.Hides)
             {
                 slots[slot] = kind;
             }
 
-            return slots;
+            return (slots, one.Outfit ?? outfit);
         }
 
         foreach (string name in declared.Keys)
         {
             if (name.StartsWith(TypePrefix, StringComparison.Ordinal) && name.Length > TypePrefix.Length)
             {
-                resolved[name[TypePrefix.Length..]] = Walk(name, 0);
+                (Dictionary<int, string> hides, string? outfit) = Walk(name, 0);
+                string kind = name[TypePrefix.Length..];
+                resolved.Hides[kind] = hides;
+                if (outfit is not null)
+                {
+                    resolved.Outfits[kind] = outfit;
+                }
             }
         }
 
@@ -648,7 +845,7 @@ public static partial class CostumeCatalogue
         return MenuSlots.Length;
     }
 
-    private static void Collect(string text, List<Parsed> into)
+    private static void Collect(string text, string sourcePath, List<Parsed> into)
     {
         foreach (Match record in Record.Matches(text))
         {
@@ -698,7 +895,11 @@ public static partial class CostumeCatalogue
                 .. DefaultTint.Matches(body).Select(m => m.Groups["uid"].Value.ToUpperInvariant()).Distinct(StringComparer.Ordinal),
             ];
 
-            into.Add(new Parsed(kind, record.Groups["id"].Value, name, path, [.. owns], hides, tints));
+            Match outfit = CostumeType.Match(body);
+
+            into.Add(new Parsed(
+                kind, record.Groups["id"].Value, name, path, sourcePath, [.. owns], hides, tints,
+                outfit.Success ? outfit.Groups["outfit"].Value : null));
         }
     }
 }

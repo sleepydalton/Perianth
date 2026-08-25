@@ -135,7 +135,7 @@ public static class GeometryAssembler
                 return uv0.Refusal;
             }
 
-            Result<GeometryPart> assembled = Finish(part, 3, positions.Value, indices.Value, uv0.Value);
+            Result<GeometryPart> assembled = Finish(part, 3, positions.Value, indices.Value, uv0.Value, localIds.Value);
             if (!assembled.IsSuccess)
             {
                 return assembled.Refusal;
@@ -192,6 +192,17 @@ public static class GeometryAssembler
 
         return Result.Ok(positions.MoveToImmutable());
     }
+
+    /// <summary>
+    /// The pool identifier each of a record's vertices reads, in vertex order.
+    /// </summary>
+    /// <remarks>
+    /// Internal because the geometry edit inverts exactly this: it needs the same
+    /// identifiers, resolved by the same checks, or it would write positions into
+    /// slots the export never read. Two implementations of one mapping is the way
+    /// an importer and an exporter come to disagree.
+    /// </remarks>
+    internal static Result<ImmutableArray<int>> LocalIds(MmbModelPart part) => ReadMode3LocalIds(part);
 
     private static Result<ImmutableArray<int>> ReadMode3LocalIds(MmbModelPart part)
     {
@@ -364,7 +375,8 @@ public static class GeometryAssembler
         int mode,
         ImmutableArray<Vector3D> positions,
         ImmutableArray<int> indices,
-        ImmutableArray<Vector2D> uv0)
+        ImmutableArray<Vector2D> uv0,
+        ImmutableArray<int> poolSlots = default)
     {
         Result<ImmutableArray<Vector3D>> normals =
             VertexNormals.Compute(positions, indices, part.SourceOrdinal);
@@ -381,7 +393,8 @@ public static class GeometryAssembler
             positions,
             indices,
             uv0,
-            normals.Value));
+            normals.Value,
+            poolSlots));
     }
 
     /// <summary>

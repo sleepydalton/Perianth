@@ -59,7 +59,11 @@ public sealed class CostumeSlot : ViewModelBase
     }
 
     /// <summary>Whether this piece can be drawn more than one way.</summary>
-    public bool HasVariants => Variants.Count > 1;
+    /// <remarks>
+    /// Two, not one: the first row is "whatever fits the outfit", so a piece
+    /// with a single cut has two rows and nothing worth choosing between.
+    /// </remarks>
+    public bool HasVariants => Variants.Count > 2;
 
     /// <summary>Raised when the choice changes, so the pane can read the piece.</summary>
     public event Action<CostumeSlot>? Changed;
@@ -76,13 +80,21 @@ public sealed class CostumeSlot : ViewModelBase
                 Variants.Clear();
                 _variant = null;
 
+                if (value?.Item is not null)
+                {
+                    // First, and selected: a hairstyle's cuts are alternatives
+                    // for different amounts of headwear, and which one a
+                    // headpiece allows is in the item data. Naming one here
+                    // overrides that, so the pane must not name one by itself.
+                    Variants.Add(new VariantChoice(null));
+                }
+
                 foreach (CostumePiece piece in value?.Item?.Variants ?? [])
                 {
                     Variants.Add(new VariantChoice(piece));
                 }
 
-                _variant = Variants.FirstOrDefault(
-                    v => ReferenceEquals(v.Piece, value?.Item?.Default));
+                _variant = Variants.FirstOrDefault();
 
                 Raise(nameof(Variants));
                 Raise(nameof(Variant));

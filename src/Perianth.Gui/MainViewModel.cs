@@ -26,7 +26,9 @@ public sealed class MainViewModel : ViewModelBase
             Export.UseArchives(root, Browse.Paths);
             Texture.UseArchives(root, Browse.Paths);
             Costume.UseArchives(root, Browse.Paths);
+            Shape.UseArchives(root, Browse.Paths);
             Patch.UseArchives(root);
+            New.UseArchives(root, Browse.Paths);
             Remember(_settings with { ArchiveRoot = root });
         };
 
@@ -41,10 +43,12 @@ public sealed class MainViewModel : ViewModelBase
         {
             Export.UseFolder(root, Browse.Paths);
             Texture.UseFolder(root, Browse.Paths);
+            Shape.UseFolder(root, Browse.Paths);
         };
         Asset.Resolved += Export.Show;
         Asset.Resolved += Texture.Show;
         Asset.Resolved += Costume.Show;
+        Asset.Resolved += Shape.Show;
 
         // So an edit can be seen in Blender before it is ever loaded in the
         // game. One function, not a reference to the other pane.
@@ -59,19 +63,38 @@ public sealed class MainViewModel : ViewModelBase
             }
 
             Result<int> costume = Costume.OverlayInto(root);
-            return costume.TryGetValue(out int fromCostume, out Refusal? costumeRefusal)
-                ? Result.Ok(fromTextures + fromCostume)
-                : costumeRefusal;
+            if (!costume.TryGetValue(out int fromCostume, out Refusal? costumeRefusal))
+            {
+                return costumeRefusal;
+            }
+
+            Result<int> shape = Shape.OverlayInto(root);
+            return shape.TryGetValue(out int fromShape, out Refusal? shapeRefusal)
+                ? Result.Ok(fromTextures + fromCostume + fromShape)
+                : shapeRefusal;
         };
 
         // What is being worn joins the export as models drawn alongside.
+        // A reshape is seen the same way an edited texture is: put into the
+        // preview folder the export reads, so it can be looked at in Blender
+        // before it is ever installed.
+        Shape.Changed += Export.CostumeChanged;
+
+        // A reshape and a repaint of the same model are one piece of work, so
+        // saving from either pane writes one folder carrying both.
+        Shape.AlsoStaged = Texture.StagedFiles;
+
         Export.Equipment = () => Costume.WornModels;
         Costume.WornChanged += Export.CostumeChanged;
-        Export.StagedCount = () => Texture.Staged;
+        // Every pane that stages something, not only the textures one. Counting
+        // textures alone told an author who had just loaded a reshape that there
+        // was nothing to apply, while the export went and applied it.
+        Export.StagedCount = () => Texture.Staged + (Shape.HasEdit ? 1 : 0);
         Export.Saved += () =>
         {
             // The texture pane suggests writing beside the user's other work.
             Texture.UseWorkingFolder(Export.WorkingFolder);
+            Shape.UseWorkingFolder(Export.WorkingFolder);
 
             Remember(_settings with
             {
@@ -93,6 +116,12 @@ public sealed class MainViewModel : ViewModelBase
 
     /// <summary>Dressing the main character, when that is what is selected.</summary>
     public CostumeViewModel Costume { get; } = new();
+
+    /// <summary>Bringing a model back after it has been reshaped in Blender.</summary>
+    public ShapeViewModel Shape { get; } = new();
+
+    /// <summary>Making something the game did not have.</summary>
+    public NewViewModel New { get; } = new();
 
     /// <summary>Applying patches somebody else made.</summary>
     public PatchViewModel Patch { get; } = new();
@@ -124,6 +153,7 @@ public sealed class MainViewModel : ViewModelBase
 
         Export.Restore(_settings);
         Texture.UseWorkingFolder(_settings.WorkingFolder);
+        Shape.UseWorkingFolder(_settings.WorkingFolder);
 
         if (_settings.ArchiveRoot is string root && System.IO.Directory.Exists(root))
         {

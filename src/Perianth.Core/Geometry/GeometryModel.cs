@@ -17,7 +17,8 @@ public sealed class GeometryPart
         ImmutableArray<Vector3D> positions,
         ImmutableArray<int> indices,
         ImmutableArray<Vector2D> uv0,
-        ImmutableArray<Vector3D> normals)
+        ImmutableArray<Vector3D> normals,
+        ImmutableArray<int> poolSlots = default)
     {
         SourceOrdinal = sourceOrdinal;
         Name = name;
@@ -25,6 +26,7 @@ public sealed class GeometryPart
         HierarchyBindingName = hierarchyBindingName;
         Positions = positions;
         Indices = indices;
+        PoolSlots = poolSlots.IsDefault ? [] : poolSlots;
         Uv0 = uv0;
         Normals = normals;
     }
@@ -53,6 +55,18 @@ public sealed class GeometryPart
 
     /// <summary>Triangle indices into <see cref="Positions"/>.</summary>
     public ImmutableArray<int> Indices { get; }
+
+    /// <summary>
+    /// Which entry of the source's shared pool each vertex reads.
+    /// </summary>
+    /// <remarks>
+    /// Carried so an import can be told rather than having to infer it. Matching
+    /// a vertex back to its pool entry by its position in this list is only true
+    /// while whatever edited the mesh writes vertices back in the order it read
+    /// them; stating the entry instead means a tool that reorders or re-welds
+    /// them moves nothing. Empty when the source did not supply them.
+    /// </remarks>
+    public ImmutableArray<int> PoolSlots { get; }
 
     /// <summary>
     /// UV0 in source vertex order, or empty when this part has none.
@@ -164,7 +178,12 @@ public sealed class GeometryModel
                 part.Positions,
                 part.Indices,
                 uv0.MoveToImmutable(),
-                part.Normals));
+                part.Normals,
+                // Carried through, like everything else this rebuild does not
+                // touch. Rewriting a coordinate says nothing about which pool
+                // entry a vertex reads, and dropping it here would have made the
+                // export state the mapping for some models and not for others.
+                part.PoolSlots));
         }
 
         return new GeometryModel(Mode, rewritten.MoveToImmutable(), SurfaceUv0Unavailable);

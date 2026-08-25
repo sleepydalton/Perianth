@@ -482,6 +482,18 @@ public sealed class TextureViewModel : ViewModelBase
     /// <summary>How many replacements are waiting to be written.</summary>
     public int ReplacingCount => _replacements.Count;
 
+    /// <summary>
+    /// What this pane has staged, as files a mod can carry.
+    /// </summary>
+    /// <remarks>
+    /// So another pane writing a mod can include them. A reshape and a repaint
+    /// of the same model are one piece of work and belong in one folder: writing
+    /// the geometry alone would produce a mod that installs and draws the model
+    /// with its original art, which looks like the texture edits were lost.
+    /// </remarks>
+    public ImmutableArray<ModFile> StagedFiles() =>
+        [.. Replacing.Select(staged => new ModFile(staged.Path, _replacements[staged.Path]))];
+
     public bool HasReplacements => _replacements.Count > 0;
 
     /// <summary>Remembers which archives the textures come from.</summary>
@@ -1272,13 +1284,39 @@ public sealed class TextureViewModel : ViewModelBase
         ArgumentNullException.ThrowIfNull(assets);
 
         _pending?.Cancel();
+
+        // Edits belong to the model they were made for, so choosing another ends
+        // them -- in the pane and in the preview folder both. Keeping them was
+        // the reported fault: a colour chosen for one character was still being
+        // applied to the next, and a material edit is written against one
+        // model's part list so it could not have meant anything else anyway.
+        //
+        // A texture replacement is not model-specific and is dropped with the
+        // rest, deliberately: two rules for what survives a selection would be
+        // harder to predict than one, and the pane says what it dropped.
+        bool changed = _assets is null ||
+            !string.Equals(_assets.Model, assets.Model, StringComparison.Ordinal);
+        int dropped = changed ? _replacements.Count : 0;
+        if (changed)
+        {
+            Forget();
+            if (_workingFolder is string preview && Directory.Exists(preview))
+            {
+                _ = OverlayLedger.Withdraw(preview, Ledger);
+            }
+        }
+
         _assets = assets;
         _editordata = null;
         _pristine = null;
         _editordataPath = null;
         _loaded = false;
         _listed.Clear();
-        Status = IsShowing ? "Reading the materials…" : "Open this tab to decode the textures.";
+        Status = dropped > 0
+            ? string.Create(
+                CultureInfo.InvariantCulture,
+                $"Dropped {dropped} staged edit(s) made for the previous model. Reading the materials…")
+            : IsShowing ? "Reading the materials…" : "Open this tab to decode the textures.";
         Changed();
 
         // Fire and forget deliberately: this is reached from a selection
@@ -1381,7 +1419,18 @@ public sealed class TextureViewModel : ViewModelBase
     {
         ArgumentNullException.ThrowIfNull(root);
 
+        // What was staged last time comes back out first. Without this an edit
+        // stays in the folder after it is discarded or the model is changed, and
+        // keeps being applied to every later export -- which is exactly what it
+        // did, repainting a character all day from a file written that morning.
+        Result<int> cleared = OverlayLedger.Withdraw(root, Ledger);
+        if (cleared.IsRefused)
+        {
+            return cleared.Refusal;
+        }
+
         int written = 0;
+        List<string> ours = [];
 
         foreach (string virtualPath in Replacing.Select(staged => staged.Path))
         {
@@ -1404,11 +1453,16 @@ public sealed class TextureViewModel : ViewModelBase
                 return published.Refusal;
             }
 
+            ours.Add(virtualPath);
             written++;
         }
 
-        return Result.Ok(written);
+        Result<int> recorded = OverlayLedger.Record(root, Ledger, ours);
+        return recorded.IsRefused ? recorded.Refusal : Result.Ok(written);
     }
+
+    /// <summary>Files this pane laid into a preview folder, so they can be removed.</summary>
+    private const string Ledger = "perianth-texture-files.txt";
 
     private async Task ShowAsync()
     {

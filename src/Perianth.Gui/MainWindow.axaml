@@ -540,6 +540,257 @@
               </DockPanel>
             </TabItem>
 
+            <!-- Bringing a model back after it has been edited in Blender.
+                 Three steps and no options: which model, where its files are
+                 and where the user keeps their work are all already known
+                 here, so asking again would be a form for a question already
+                 answered. Moving a part's points and redrawing it outright are
+                 two operations in the core and one button here, because the
+                 file says which applies. -->
+            <TabItem Header="Shape">
+              <DockPanel DataContext="{Binding Shape}" Margin="0,8,0,0">
+
+                <TextBlock DockPanel.Dock="Top" Text="{Binding Status}" Classes="paneNote"
+                           FontSize="11" TextWrapping="Wrap" Margin="0,0,0,8" />
+
+                <ProgressBar DockPanel.Dock="Top" IsIndeterminate="True" Height="3"
+                             Margin="0,0,0,8" IsVisible="{Binding Busy}" />
+
+                <ScrollViewer VerticalScrollBarVisibility="Auto" AllowAutoHide="False"
+                              IsVisible="{Binding Applies}">
+                  <StackPanel Spacing="10" Margin="0,0,8,0">
+
+                    <!-- What the tab is for, before how to use it. Without
+                         this the pane opened on step 1 of a procedure, which
+                         reads as instructions for something already understood. -->
+                    <TextBlock Text="What this does" Classes="optionLabel" />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="Changes the shape of something the game already has. Edit the model in Blender, load it back here, and save your version as a mod. Anything with a shape can be changed this way — a hat, a prop, a character." />
+
+                    <TextBlock Text="In Blender, step by step" Classes="optionLabel" Margin="0,10,0,0" />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="1.  Export this model from the Export tab, then open the .glb in Blender (File → Import → glTF 2.0). Leave every import option as it comes." />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="2.  Click the part you want to change, then press Tab. That puts you in Edit Mode, where you move the individual points the shape is made of. Without pressing Tab you move the whole part around instead, and this reads points, so none of that would come back." />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="3.  Press A to select all of that part. Press G to move it, or S to resize it, then move the mouse and click to finish." />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="4.  Press Tab again to leave Edit Mode, then File → Export → glTF 2.0, and choose .glb as the format. In the export panel, open Data → Mesh and tick Attributes — Blender drops them otherwise, and they are how this knows which point is which." />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="5.  Load that file below." />
+
+                    <Button Content="Load the edited file…" Command="{Binding ChooseCommand}"
+                            HorizontalAlignment="Left" />
+
+                    <CheckBox IsChecked="{Binding OwnUv0}" Content="Use my file's texture layout" />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="Something has to decide which bit of the texture lands where on the shape. Normally the game works it out from where the points sit, as though projecting the image straight on. That is right for the flat, card-like pieces the game is built from, and it smears the same image down the sides of anything with real thickness. Tick this to use the UV map from your own file instead." />
+
+                    <TextBlock Text="{Binding Chosen}" Classes="paneNote" FontSize="11"
+                               IsVisible="{Binding HasEdit}" />
+                    <TextBlock Text="{Binding Summary}" FontSize="12" TextWrapping="Wrap"
+                               IsVisible="{Binding HasEdit}" />
+
+                    <Button Content="Save as a mod…" Command="{Binding SaveCommand}"
+                            HorizontalAlignment="Left" IsVisible="{Binding HasEdit}" />
+
+                    <!-- Beside the button rather than in the status line at the
+                         top of the pane, which is where a confirmation goes to
+                         be missed. It names the folder, so "did that work?" is
+                         answered without going to look. -->
+                    <Border IsVisible="{Binding Saved, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                            Background="{DynamicResource AppPanel}" CornerRadius="4" Padding="8,6"
+                            BorderBrush="{DynamicResource AppBorder}" BorderThickness="1">
+                      <TextBlock Text="{Binding Saved}" FontSize="11" TextWrapping="Wrap" />
+                    </Border>
+
+                    <!-- These were four rules from the era when a part could
+                         only be moved: no adding or deleting points, and keep
+                         each part flat. Both limits are gone: a part may be
+                         redrawn with more triangles and more points, and depth
+                         within a part draws in the right order in game (Roadmap
+                         §10.47-§10.58, §10.165). What is left is what actually
+                         still bites, which is naming and Blender's importer. -->
+                    <TextBlock Text="The rules" Classes="optionLabel" Margin="0,10,0,0" />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="Move the points, and add, delete or re-cut triangles as you like." />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="Leave the part names exactly as Blender imported them. The name is how each part is matched back to the model, so a renamed part is not found." />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="When importing the .glb, leave Blender's Merge Vertices option off. It is the one setting that breaks the match." />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="A part you leave out of your file is left exactly as it was. To hide one, shrink it to a point rather than deleting it." />
+
+                    <!-- The old version of this section taught a workaround for
+                         a limit that no longer exists: dragging points onto each
+                         other to change an outline, back when only a move could
+                         be written. Now the file decides, so what is worth
+                         saying is what the two outcomes are and where to read
+                         which one happened. -->
+                    <TextBlock Text="Moved, or redrawn" Classes="optionLabel" Margin="0,10,0,0" />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="If a part's points have only moved, they are moved, and nothing else about the model changes." />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="If you changed which points join up — extruding, subdividing, deleting, merging — the part is redrawn from your triangles instead." />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="Which of the two happens is read off your file, part by part, so there is nothing to choose. The line above the Save button says what each part got." />
+
+                  </StackPanel>
+                </ScrollViewer>
+
+              </DockPanel>
+            </TabItem>
+
+            <TabItem Header="New">
+              <DockPanel DataContext="{Binding New}" Margin="0,8,0,0">
+
+                <TextBlock DockPanel.Dock="Top" Text="{Binding Status}" Classes="paneNote"
+                           FontSize="11" TextWrapping="Wrap" Margin="0,0,0,8" />
+
+                <ProgressBar DockPanel.Dock="Top" IsIndeterminate="True" Height="3"
+                             Margin="0,0,0,8" IsVisible="{Binding Busy}" />
+
+                <ScrollViewer VerticalScrollBarVisibility="Auto" AllowAutoHide="False">
+                  <StackPanel Spacing="10" Margin="0,0,8,0">
+
+                    <TextBlock Text="Making" Classes="optionLabel" />
+                    <ComboBox ItemsSource="{Binding Kinds}" SelectedItem="{Binding Kind}"
+                              HorizontalAlignment="Stretch" />
+
+                    <TextBlock Text="1.  The mesh you made" Classes="optionLabel" Margin="0,8,0,0" />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="A .glb exported from Blender. The Shape tab's rules apply: move points, add and re-cut triangles as you like, but keep the part names Blender gave them." />
+                    <Button Content="Choose a .glb…" Command="{Binding ChooseMeshCommand}"
+                            HorizontalAlignment="Left" />
+                    <TextBlock Text="{Binding Mesh}" Classes="paneNote" FontSize="11" />
+
+                    <CheckBox IsChecked="{Binding OwnUv0}" Content="Use my file's texture layout" />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="Something has to decide which bit of the texture lands where on the shape. Normally the game works it out from where the points sit, as though projecting the image straight on — right for a flat, card-like piece, and it smears the same image down the sides of anything with real thickness. Tick this to use the UV map from your own file instead." />
+
+                    <TextBlock Text="2.  Something for it to be based on" Classes="optionLabel" Margin="0,8,0,0" />
+                    <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                               Text="Pick something the game already has. Yours keeps all of its settings — where it is worn, how it behaves — and replaces its shape with your mesh. So pick something of the same sort as the thing you are making." />
+                    <TextBox Text="{Binding Search}" PlaceholderText="Search" />
+                    <ListBox ItemsSource="{Binding Candidates}" SelectedItem="{Binding Chosen}"
+                             Height="180">
+                      <ListBox.ItemTemplate>
+                        <DataTemplate>
+                          <StackPanel Margin="0,2">
+                            <TextBlock Text="{Binding Name}" FontSize="12" />
+                            <TextBlock Text="{Binding Detail}" Classes="paneNote" FontSize="10" />
+                          </StackPanel>
+                        </DataTemplate>
+                      </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <TextBlock Text="3.  What to call it" Classes="optionLabel" Margin="0,8,0,0" />
+                    <TextBox Text="{Binding Name}" PlaceholderText="My Cool Hat" />
+                    <TextBlock Text="{Binding Filenames}" Classes="paneNote" FontSize="11" />
+
+                    <StackPanel Spacing="6" IsVisible="{Binding IsCostume}">
+                      <TextBlock Text="4.  How the player gets hold of it" Classes="optionLabel" Margin="0,8,0,0" />
+                      <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                                 Text="An item nothing hands out exists in the game but never appears anywhere. These are the three ways the game hands something over." />
+                      <ComboBox ItemsSource="{Binding ObtainOptions}" SelectedItem="{Binding Obtain}"
+                                HorizontalAlignment="Stretch" />
+
+                      <StackPanel Spacing="6" IsVisible="{Binding NeedsPlace}">
+                        <TextBlock Text="{Binding PlaceLabel}" Classes="optionLabel" Margin="0,6,0,0" />
+                        <TextBox Text="{Binding PlaceSearch}" PlaceholderText="Search" />
+                        <ListBox ItemsSource="{Binding Places}" SelectedItem="{Binding Place}"
+                                 Height="110">
+                          <ListBox.ItemTemplate>
+                            <DataTemplate>
+                              <TextBlock Text="{Binding Name}" FontSize="12" Margin="0,2" />
+                            </DataTemplate>
+                          </ListBox.ItemTemplate>
+                        </ListBox>
+                      </StackPanel>
+
+                      <StackPanel Spacing="6" IsVisible="{Binding NeedsGameState}">
+                        <TextBlock Text="From when in the story" Classes="optionLabel" Margin="0,6,0,0" />
+                        <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                                   Text="The shop starts stocking it once the game reaches this point. Day_1 means from the beginning." />
+                        <ComboBox ItemsSource="{Binding GameStates}" SelectedItem="{Binding GameState}"
+                                  HorizontalAlignment="Stretch" />
+                      </StackPanel>
+
+                      <StackPanel Spacing="6" IsVisible="{Binding NeedsLoot}">
+                        <TextBlock Text="How often, and how many" Classes="optionLabel" Margin="0,6,0,0" />
+                        <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                                   Text="Chance runs from just above 0 to 1, where 1 means every time. The two numbers after it are the fewest and the most dropped at once." />
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                          <TextBox Text="{Binding Chance}" PlaceholderText="chance" Width="80" />
+                          <TextBox Text="{Binding Least}" PlaceholderText="fewest" Width="80" />
+                          <TextBox Text="{Binding Most}" PlaceholderText="most" Width="80" />
+                        </StackPanel>
+                      </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel Spacing="6" IsVisible="{Binding IsProp}">
+                      <TextBlock Text="4.  Where it stands" Classes="optionLabel" Margin="0,8,0,0" />
+                      <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                                 Text="Filled in from the prop you picked, so it starts in the same spot. Change the numbers to move it from there — they are the game's own coordinates, and there is no other way to know where anywhere is." />
+                      <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBox Text="{Binding X}" PlaceholderText="x" Width="80" />
+                        <TextBox Text="{Binding Y}" PlaceholderText="y" Width="80" />
+                        <TextBox Text="{Binding Z}" PlaceholderText="z" Width="80" />
+                      </StackPanel>
+                    </StackPanel>
+
+                    <Button Content="Save as a mod…" Command="{Binding SaveCommand}"
+                            HorizontalAlignment="Left" IsEnabled="{Binding Ready}"
+                            Margin="0,8,0,0" />
+
+                    <Border IsVisible="{Binding Saved, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                            Background="{DynamicResource AppPanel}" CornerRadius="4" Padding="8,6"
+                            BorderBrush="{DynamicResource AppBorder}" BorderThickness="1">
+                      <StackPanel Spacing="6">
+                        <TextBlock Text="{Binding Saved}" FontSize="11" TextWrapping="Wrap" />
+                        <ItemsControl ItemsSource="{Binding Notes}">
+                          <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                              <TextBlock Text="{Binding}" Classes="paneNote" FontSize="11"
+                                         TextWrapping="Wrap" Margin="0,3,0,0" />
+                            </DataTemplate>
+                          </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                      </StackPanel>
+                    </Border>
+
+                    <!-- The next step, and the one most likely to be missed:
+                         a new thing wearing its template's art looks finished
+                         and is not. It was the last plain line of the pane,
+                         which is where a next step goes to be missed, so it is
+                         a box of its own above the caveats. -->
+                    <Border Background="{DynamicResource AppPanel}" CornerRadius="4" Padding="8,6"
+                            BorderBrush="{DynamicResource AppControlAccent}" BorderThickness="1"
+                            Margin="0,10,0,0">
+                      <StackPanel Spacing="4">
+                        <TextBlock Text="Next: give it art of its own" FontSize="12" FontWeight="SemiBold"
+                                   TextWrapping="Wrap" />
+                        <TextBlock Classes="paneNote" FontSize="11" TextWrapping="Wrap"
+                                   Text="Your new thing is painted with the textures of the one you based it on, because those came across with it. Open it in the Textures tab to replace them." />
+                      </StackPanel>
+                    </Border>
+
+                    <!-- One caveat per kind, because the flat version said the
+                         game has never been seen to load a file it did not ship,
+                         which is wrong in both directions: most of what this
+                         writes goes to a path of its own, and a path reference
+                         to a new path is proven. What is unproven differs by
+                         kind, so it is a bound property rather than a
+                         paragraph covering all three. -->
+                    <TextBlock Text="Worth knowing" Classes="optionLabel" Margin="0,10,0,0" />
+                    <TextBlock Text="{Binding Caveat}" Classes="paneNote" FontSize="11" TextWrapping="Wrap" />
+
+                  </StackPanel>
+                </ScrollViewer>
+
+              </DockPanel>
+            </TabItem>
+
           </TabControl>
 
         </DockPanel>
@@ -692,8 +943,8 @@
             <!-- The point of this one: a GLB costs nothing and a mod loader run
                  does not, so an edit should be looked at here first. -->
             <CheckBox IsChecked="{Binding IncludeStagedChanges}"
-                      Content="Include my texture changes"
-                      ToolTip.Tip="Exports with your own textures and materials on top of the game's files, so you can see a change in Blender before loading it in the game." />
+                      Content="Include my changes"
+                      ToolTip.Tip="Exports with your own edits on top of the game's files — textures, materials and shape — so you can see them in Blender before loading them in the game." />
 
             <Button Content="{Binding ModFolderLabel}" Click="ChooseModFolder"
                     IsEnabled="{Binding IncludeStagedChanges}"

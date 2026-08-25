@@ -159,7 +159,7 @@ public sealed class CostumeViewModel : ViewModelBase
     {
         ArgumentNullException.ThrowIfNull(root);
 
-        Result<int> cleared = Withdraw(root);
+        Result<int> cleared = OverlayLedger.Withdraw(root, Ledger);
         if (cleared.IsRefused)
         {
             return cleared.Refusal;
@@ -211,7 +211,7 @@ public sealed class CostumeViewModel : ViewModelBase
             written += count;
         }
 
-        Result<int> recorded = Record(root, ours);
+        Result<int> recorded = OverlayLedger.Record(root, Ledger, ours);
         return recorded.IsRefused ? recorded.Refusal : Result.Ok(written);
     }
 
@@ -224,74 +224,6 @@ public sealed class CostumeViewModel : ViewModelBase
     /// path of its own, so an export reading the overlay never sees it.
     /// </remarks>
     private const string Ledger = "perianth-costume-colours.txt";
-
-    /// <summary>Removes the recolours written for whatever was worn last time.</summary>
-    private static Result<int> Withdraw(string root)
-    {
-        string ledger = Path.Combine(root, Ledger);
-        if (!File.Exists(ledger))
-        {
-            return Result.Ok(0);
-        }
-
-        string[] lines;
-        try
-        {
-            lines = File.ReadAllLines(ledger);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return Refusal.Resource($"'{ledger}' could not be read.");
-        }
-
-        int removed = 0;
-        foreach (string line in lines)
-        {
-            string path = line.Trim();
-            if (path.Length == 0)
-            {
-                continue;
-            }
-
-            string file = Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar));
-            try
-            {
-                if (File.Exists(file))
-                {
-                    File.Delete(file);
-                    removed++;
-                }
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                return Refusal.Resource($"'{file}' could not be removed.");
-            }
-        }
-
-        try
-        {
-            File.Delete(ledger);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return Refusal.Resource($"'{ledger}' could not be removed.");
-        }
-
-        return Result.Ok(removed);
-    }
-
-    /// <summary>Records which overlay files this pane wrote, for next time.</summary>
-    private static Result<int> Record(string root, List<string> ours)
-    {
-        if (ours.Count == 0)
-        {
-            return Result.Ok(0);
-        }
-
-        return AtomicFile.Publish(
-            Path.Combine(root, Ledger),
-            System.Text.Encoding.UTF8.GetBytes(string.Join('\n', ours) + "\n"));
-    }
 
     /// <summary>
     /// Recolours every way the piece can be drawn, which for a hairstyle is six
@@ -496,11 +428,63 @@ public sealed class CostumeViewModel : ViewModelBase
 
     private void OnSlotChanged(CostumeSlot slot)
     {
+        TakeOffTheOtherOutfit(slot);
         Raise(nameof(WornCount));
         WornChanged?.Invoke();
         if (slot.Chosen?.Item is not null)
         {
             _ = ColoursAsync(slot);
+        }
+    }
+
+    /// <summary>
+    /// Clears whatever belongs to an outfit other than the one just chosen from.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The character has three outfits and wears one — see
+    /// <see cref="CostumeCatalogue.Outfit"/>. This pane offers all fourteen
+    /// slots at once, so it will happily put a hero body over a street body and
+    /// a backstory pair of hands over both, and each of those replaces the
+    /// character's own parts where it draws. The result is two suits in one
+    /// place: an extra pair of hands where the arm ends, and half an outfit
+    /// hidden inside the other, which is exactly what was reported.
+    /// </para>
+    /// <para>
+    /// <b>Done here rather than refused at export</b>, because this is what the
+    /// game does when a costume is equipped, and because a refusal arriving at
+    /// the end of a dressing session cannot say which piece was the mistake.
+    /// The cleared slots change in front of the reader and the status line names
+    /// them, so nothing is dropped silently.
+    /// </para>
+    /// </remarks>
+    private void TakeOffTheOtherOutfit(CostumeSlot slot)
+    {
+        if (slot.Chosen?.Item is not CostumeItem chosen || !chosen.IsExclusive)
+        {
+            return;
+        }
+
+        List<string> removed = [];
+        foreach (CostumeSlot other in Slots)
+        {
+            if (ReferenceEquals(other, slot) ||
+                other.Chosen?.Item is not CostumeItem worn ||
+                !worn.IsExclusive ||
+                string.Equals(worn.Outfit, chosen.Outfit, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            removed.Add(worn.Name);
+            other.Chosen = other.Nothing;
+        }
+
+        if (removed.Count > 0)
+        {
+            Status = string.Create(
+                CultureInfo.InvariantCulture,
+                $"'{chosen.Name}' is part of the {chosen.Outfit} outfit, so {string.Join(", ", removed)} came off — a character wears one outfit at a time.");
         }
     }
 

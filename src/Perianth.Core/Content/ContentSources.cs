@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Immutable;
 using System.Globalization;
 using System.IO;
 using Perianth.Formats.Diagnostics;
@@ -80,6 +81,45 @@ public sealed class ContentSources : IDisposable
         }
 
         return Result.Ok(content.IsPresent ? content.Bytes.ToArray() : null);
+    }
+
+    /// <summary>
+    /// Every file of an extension beneath one virtual folder of the loose tree.
+    /// </summary>
+    /// <remarks>
+    /// <b>Loose only, and deliberately.</b> The archives can be enumerated —
+    /// <c>SdfIndex.Enumerate</c> walks their filename trie — but a caller
+    /// sweeping a folder is asking about the files it has extracted, and
+    /// answering from the archives instead would report paths the caller cannot
+    /// read. Empty where no content root was given, which is a caller's cue to
+    /// say the sweep was skipped rather than that it found nothing.
+    /// </remarks>
+    public Result<ImmutableArray<string>> ListLoose(string virtualFolder, string extension)
+    {
+        ArgumentNullException.ThrowIfNull(virtualFolder);
+        ArgumentNullException.ThrowIfNull(extension);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (_contentRoot is null)
+        {
+            return Result.Ok(ImmutableArray<string>.Empty);
+        }
+
+        string folder = Path.Combine(
+            _contentRoot, virtualFolder.Replace('/', Path.DirectorySeparatorChar));
+        if (!Directory.Exists(folder))
+        {
+            return Result.Ok(ImmutableArray<string>.Empty);
+        }
+
+        ImmutableArray<string>.Builder found = ImmutableArray.CreateBuilder<string>();
+        foreach (string path in Directory.EnumerateFiles(folder, "*" + extension, SearchOption.TopDirectoryOnly))
+        {
+            found.Add(virtualFolder.TrimEnd('/') + "/" + Path.GetFileName(path));
+        }
+
+        found.Sort(StringComparer.Ordinal);
+        return Result.Ok(found.ToImmutable());
     }
 
     /// <summary>Closes any archive handles.</summary>

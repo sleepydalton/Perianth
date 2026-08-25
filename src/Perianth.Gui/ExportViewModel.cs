@@ -759,19 +759,19 @@ public sealed class ExportViewModel : ViewModelBase
             {
                 return string.Create(
                     CultureInfo.InvariantCulture,
-                    $"Using that mod, plus {waiting} unsaved {(waiting == 1 ? "edit" : "edits")} from the Textures tab.");
+                    $"Using that mod, plus {waiting} unsaved {(waiting == 1 ? "edit" : "edits")} of your own.");
             }
 
             if (waiting > 0)
             {
                 return string.Create(
                     CultureInfo.InvariantCulture,
-                    $"Using {waiting} unsaved {(waiting == 1 ? "edit" : "edits")} from the Textures tab.");
+                    $"Using {waiting} unsaved {(waiting == 1 ? "edit" : "edits")} of your own.");
             }
 
             return _modFolder is not null
                 ? "Using that mod folder."
-                : "Nothing to apply: the Textures tab has no unsaved edits. Writing a mod clears them, so choose that mod folder here.";
+                : "Nothing to apply: no unsaved edits on the Textures or Shape tabs. Writing a mod clears them, so choose that mod folder here.";
         }
     }
 

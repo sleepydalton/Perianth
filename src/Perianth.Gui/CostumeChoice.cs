@@ -104,13 +104,22 @@ public sealed class CostumeColour
 /// nothing better to call them and inventing names would suggest a meaning
 /// nobody has measured.
 /// </remarks>
-public sealed class VariantChoice(CostumePiece piece)
+public sealed class VariantChoice(CostumePiece? piece)
 {
-    /// <summary>The model this row draws.</summary>
-    public CostumePiece Piece { get; } = piece;
+    /// <summary>
+    /// The model this row draws, or null for the row that lets the outfit
+    /// decide.
+    /// </summary>
+    /// <remarks>
+    /// The null row is the default and it matters: a headpiece states which
+    /// cuts may be worn under it, and naming a cut here overrides that. The
+    /// pane used to pre-select the whole-head cut, which meant every hat was
+    /// worn over the full hairstyle and the rule never ran.
+    /// </remarks>
+    public CostumePiece? Piece { get; } = piece;
 
     /// <summary>What the list shows.</summary>
-    public string Label { get; } = Name(piece.Kind);
+    public string Label { get; } = piece is null ? "whatever fits the outfit" : Name(piece.Kind);
 
     public override string ToString() => Label;
 

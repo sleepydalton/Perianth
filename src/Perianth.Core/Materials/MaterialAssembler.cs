@@ -329,7 +329,29 @@ public static class MaterialAssembler
             ? null
             : section.CustomRecords[0];
 
-        Rgb tint = custom is { Slot10: { } t } ? new Rgb(t.X, t.Y, t.Z) : new Rgb(1, 1, 1);
+        // The camel shader ends by scaling the surface twice and adding the
+        // results — `myConstAmbientColor.rgb * colour + colour *
+        // myConstAlbedoColor.w` — so a material is drawn at
+        // (slot_50.rgb + slot_10.w) of its own colour. It is per channel
+        // because the ambient term is, and it multiplies the *finished* colour,
+        // so folding it into the tint is right on both sides of the offset
+        // branch below: the tint multiplies the image either way.
+        //
+        // The ambient term is zero on 99.9% of the corpus and slot_10.w is
+        // 0.800 at the first, second and third quartile of 1,441,276 character
+        // sections, so this is a 25% correction on very nearly everything, and
+        // an export was that much too bright before it. Research §10.126.
+        //
+        // A section with no custom record scales by 1: the shader's own
+        // declared defaults are `myConstAlbedoColor = 1 1 1 1` and
+        // `myConstAmbientColor = 0 0 0 0`.
+        Rgb brightness = custom is { Slot50: { } ambient, Slot10: { } albedo }
+            ? new Rgb(ambient.X + albedo.W, ambient.Y + albedo.W, ambient.Z + albedo.W)
+            : new Rgb(1, 1, 1);
+
+        Rgb tint = custom is { Slot10: { } t }
+            ? new Rgb(t.X * brightness.R, t.Y * brightness.G, t.Z * brightness.B)
+            : brightness;
         Rgb gain = custom is { Slot30: { } g } ? new Rgb(g.X, g.Y, g.Z) : new Rgb(1, 1, 1);
         Rgb offset = custom is { Slot40: { } o } ? new Rgb(o.X, o.Y, o.Z) : new Rgb(0, 0, 0);
         double alphaFactor = custom?.Slot20.W ?? 1.0;
