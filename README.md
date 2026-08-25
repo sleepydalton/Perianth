@@ -11,7 +11,7 @@ It refuses inputs it cannot prove it understands rather than guessing at them.
 
 **Status.** Export, extraction, texture and material editing, patches and the
 window all work. Writing the *model* format back — turning a GLB into a `.mmb`
-— is the eventual goal and is not built.
+is under development.
 
 **The tool is experimental and in early development. Users are advised to make
 back-ups before usage.**
@@ -52,8 +52,7 @@ The tests need nothing but the SDK:
 dotnet test
 ```
 
-They are deliberately **asset-free**, so they run on a machine that has never
-seen the game. Four suites check the readers against the game's real files
+They are deliberately **asset-free**. Four suites check the readers against the game's real files
 instead — DDS, PNG, SDF archives and editordata — and those skip unless you
 point them at your own copy, so a normal run reports a dozen or so skipped and
 that is correct rather than broken. Each one names the environment variable it
@@ -81,6 +80,9 @@ archives. From there:
   textures** applied — unsaved edits from the Textures tab, or a mod folder you
   wrote earlier — so you can look at a change in Blender before ever loading it
   in the game.
+- **Shape** brings a model back after you have reshaped it in Blender. Export
+  it, move parts about, export from Blender, and load that file here. What you
+  may not change is the number of vertices — see the tab, which says so.
 - **Patches** makes a shareable patch out of a mod folder, or applies patches
   somebody sent you.
 
@@ -107,7 +109,7 @@ recorded anywhere, so the tool offers them rather than choosing.
 
 ## The command line (an alternative way of using it)
 
-Five verbs. `perianth` with no arguments lists every option for each.
+Six verbs. `perianth` with no arguments lists every option for each.
 
 **Find something**, when you do not know where it lives:
 
@@ -207,6 +209,47 @@ If you pointed a part at a texture and then misspelled the path when adding
 that texture, the mod still installs and still loads — it just draws the wrong
 thing, and says nothing. This is what catches that.
 
+**Reshape a model in Blender**, and bring it back. Export the model, move its
+parts about, export from Blender, then:
+
+```console
+perianth geometry --mmb ./kit/.../chr_cartman.mmb \
+  --cameldata ./kit/.../chr_cartman.cameldata \
+  --from reshaped.glb --out ./mods --name "My reshape" --author me
+```
+
+`--dry-run` first, to see how much it would move before it writes anything.
+
+**The step people miss:** in Blender you must be in **Edit Mode** (click the
+part, press Tab) before moving anything. Outside it you move the object rather
+than its shape, the vertex positions never change, and the reshape reports that
+nothing moved.
+
+**One export setting worth ticking:** in the glTF export panel, under
+*Data → Mesh*, switch on **Attributes**. The export carries a hidden number on
+each point saying which piece of the model's shared data it belongs to, and
+Blender drops it unless that is on. Without it the reshape still works — it falls
+back to the order the points are in — but it is then relying on Blender writing
+them back in the order it read them, which is not promised.
+
+Three things to know, because they are the format rather than the tool:
+
+- **The vertex count must not change.** You can move any vertex anywhere; you
+  cannot add or delete one. In Blender, leave *Merge Vertices* switched off when
+  importing, or the count changes and the reshape refuses.
+- **Vertices that started in the same place move together.** A part stores one
+  position per shared corner, so pulling one corner away from the others has
+  nowhere to be written and refuses instead.
+- **A part has one depth**, usually, shared by all of it. You can move a part
+  forward or back; you cannot give its vertices depths of their own.
+
+To make a part vanish, squash all of it into a single point: the triangles
+become zero-sized and draw nothing, and the vertex count is unchanged.
+
+The mod carries the model as well as the edited file, because the two are a
+matched pair. Deleting a mesh in Blender does not delete the part — nothing is
+said about it, so it stays as it was.
+
 **Make a patch to share it**, and apply one you were given:
 
 ```console
@@ -275,3 +318,7 @@ share it.
 
 3. **Please respect the copyright and relevant laws around all game assets,
    models, audio and other materials.**
+
+4. **This tool is intended for use on officially released game content that you
+   legally own. I do not condone its use on leaked, unreleased, or pirated
+   builds.**
