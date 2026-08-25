@@ -98,6 +98,15 @@ public static class GlbWriter
 
     private const string TextureTransformExtension = "KHR_texture_transform";
 
+    /// <remarks>
+    /// The camel shader is forward and writes its colour straight out —
+    /// <c>colorOut = float4(outColor, outAlpha)</c> — with no normal anywhere in
+    /// the path, so a surface is its texture times its constants and nothing
+    /// else. Declaring metallic-roughness without this says the opposite, and a
+    /// viewer given a lit surface and no lamp draws it black.
+    /// </remarks>
+    private const string UnlitExtension = "KHR_materials_unlit";
+
     /// <summary>Projects an untextured <paramref name="model"/> into GLB bytes.</summary>
     public static Result<byte[]> Write(GeometryModel model, GlbWriteOptions options) =>
         Write(model, MaterialSet.Empty, options);
@@ -171,6 +180,17 @@ public static class GlbWriter
             if (part.HasUv0)
             {
                 accessors.Add(new AccessorPlan(AccessorKind.TexCoord0, part, offset, part.Uv0.Length * 2 * sizeof(float)));
+                offset += accessors[^1].ByteLength;
+            }
+
+            // Which pool entry each vertex came from, so an import is told
+            // rather than having to infer it from list order. Written as floats
+            // because they are exact for the range a slot uses and are the type
+            // most likely to survive a trip through other tools; the accessor is
+            // four bytes wide either way, which keeps every later one aligned.
+            if (!part.PoolSlots.IsDefaultOrEmpty)
+            {
+                accessors.Add(new AccessorPlan(AccessorKind.PoolSlot, part, offset, part.PoolSlots.Length * sizeof(float)));
                 offset += accessors[^1].ByteLength;
             }
 
@@ -277,6 +297,16 @@ public static class GlbWriter
 
                     break;
 
+                case AccessorKind.PoolSlot:
+                    for (int i = 0; i < part.PoolSlots.Length; i++)
+                    {
+                        // A slot is a u16, so a float holds it exactly; there is
+                        // no rounding to consider and none is done.
+                        BinaryPrimitives.WriteSingleLittleEndian(target[(i * 4)..], part.PoolSlots[i]);
+                    }
+
+                    break;
+
                 case AccessorKind.Indices:
                     for (int i = 0; i < part.Indices.Length; i++)
                     {
@@ -369,7 +399,7 @@ public static class GlbWriter
             WriteTextures(writer, materials);
             WriteSamplers(writer, materials);
             WriteMaterials(writer, materials, doubleSided, needDefaultMaterial);
-            WriteExtensionsUsed(writer, materials);
+            WriteExtensionsUsed(writer, materials, needDefaultMaterial);
             WriteAnimations(writer, options.Animations, layout);
 
             writer.WriteEndObject();
@@ -527,6 +557,16 @@ public static class GlbWriter
             writer.WriteStartObject("attributes");
             writer.WriteNumber("POSITION", layout.IndexOf(part, AccessorKind.Position));
             writer.WriteNumber("NORMAL", layout.IndexOf(part, AccessorKind.Normal));
+
+            // Which pool entry each vertex reads. An importer that has it need
+            // not infer the mapping from the order vertices happen to be in,
+            // which is the only thing making a reshape depend on what another
+            // tool does with that order.
+            if (!model.Parts[part].PoolSlots.IsDefaultOrEmpty)
+            {
+                writer.WriteNumber("_POOLSLOT", layout.IndexOf(part, AccessorKind.PoolSlot));
+            }
+
             if (model.Parts[part].HasUv0)
             {
                 writer.WriteNumber("TEXCOORD_0", layout.IndexOf(part, AccessorKind.TexCoord0));
@@ -575,7 +615,7 @@ public static class GlbWriter
             writer.WriteNumber("count", plan.Count);
             writer.WriteString("type", plan.Kind switch
             {
-                AccessorKind.Indices => "SCALAR",
+                AccessorKind.Indices or AccessorKind.PoolSlot => "SCALAR",
                 AccessorKind.TexCoord0 => "VEC2",
                 _ => "VEC3",
             });
@@ -742,10 +782,13 @@ public static class GlbWriter
             writer.WriteString("name", material.Name);
 
             writer.WriteStartObject("pbrMetallicRoughness");
+            // glTF defines baseColorFactor as **linear** and the source constant
+            // is not, so it is converted here rather than carried across. Alpha
+            // is linear in both and passes through.
             writer.WriteStartArray("baseColorFactor");
-            writer.WriteNumberValue(material.BaseColorFactor.R);
-            writer.WriteNumberValue(material.BaseColorFactor.G);
-            writer.WriteNumberValue(material.BaseColorFactor.B);
+            writer.WriteNumberValue(Linear(material.BaseColorFactor.R));
+            writer.WriteNumberValue(Linear(material.BaseColorFactor.G));
+            writer.WriteNumberValue(Linear(material.BaseColorFactor.B));
             writer.WriteNumberValue(material.BaseColorFactor.A);
             writer.WriteEndArray();
 
@@ -805,6 +848,7 @@ public static class GlbWriter
                 writer.WriteBoolean("doubleSided", true);
             }
 
+            WriteUnlit(writer);
             writer.WriteEndObject();
         }
 
@@ -814,10 +858,22 @@ public static class GlbWriter
             writer.WriteStartObject();
             writer.WriteString("name", GlbNames.PlanarDefaultMaterial);
             writer.WriteBoolean("doubleSided", true);
+            WriteUnlit(writer);
             writer.WriteEndObject();
         }
 
         writer.WriteEndArray();
+    }
+
+    /// <summary>
+    /// Marks one material as taking its colour without being lit.
+    /// </summary>
+    private static void WriteUnlit(Utf8JsonWriter writer)
+    {
+        writer.WriteStartObject("extensions");
+        writer.WriteStartObject(UnlitExtension);
+        writer.WriteEndObject();
+        writer.WriteEndObject();
     }
 
     /// <summary>
@@ -828,8 +884,16 @@ public static class GlbWriter
     /// so a reader that must understand an extension to load the file is told
     /// which. Emitted last, matching the reference document order.
     /// </remarks>
-    private static void WriteExtensionsUsed(Utf8JsonWriter writer, MaterialSet materials)
+    private static void WriteExtensionsUsed(
+        Utf8JsonWriter writer, MaterialSet materials, bool needDefaultMaterial)
     {
+        // Nothing to declare where no material was written at all, which is
+        // the same condition WriteMaterials returns on.
+        if (materials.Materials.IsDefaultOrEmpty && !needDefaultMaterial)
+        {
+            return;
+        }
+
         bool usesTransform = false;
         if (!materials.Materials.IsDefaultOrEmpty)
         {
@@ -843,13 +907,15 @@ public static class GlbWriter
             }
         }
 
-        if (!usesTransform)
+        writer.WriteStartArray("extensionsUsed");
+        if (usesTransform)
         {
-            return;
+            writer.WriteStringValue(TextureTransformExtension);
         }
 
-        writer.WriteStartArray("extensionsUsed");
-        writer.WriteStringValue(TextureTransformExtension);
+        // Every material is unlit, so this is unconditional where the transform
+        // is not: the list states what appears, and this always appears.
+        writer.WriteStringValue(UnlitExtension);
         writer.WriteEndArray();
     }
 
@@ -1065,6 +1131,7 @@ public static class GlbWriter
     private enum AccessorKind
     {
         Position,
+        PoolSlot,
         Normal,
         TexCoord0,
         Indices,
@@ -1094,6 +1161,7 @@ public static class GlbWriter
             AccessorKind.Indices => Part.Indices.Length,
             AccessorKind.TexCoord0 => Part.Uv0.Length,
             AccessorKind.Normal => Part.Normals.Length,
+            AccessorKind.PoolSlot => Part.PoolSlots.Length,
             _ => Part.Positions.Length,
         };
     }
@@ -1126,18 +1194,65 @@ public static class GlbWriter
         /// searched for: a scan per lookup would be quadratic in the accessor
         /// count, and a real model reaches eleven thousand of them.
         /// </summary>
+        /// <summary>Where a part's accessor of <paramref name="kind"/> sits.</summary>
+        /// <remarks>
+        /// Searched rather than counted. This used to add a fixed offset per kind
+        /// and adjust for the one optional attribute, which was correct until a
+        /// second optional one was added in the middle: every part then declared
+        /// its vertex slots as its index buffer, and the file was well-formed and
+        /// wrong. A search cannot drift from the order the accessors were
+        /// actually laid down in.
+        /// </remarks>
         public int IndexOf(int partOrdinal, AccessorKind kind)
         {
             int first = firstAccessorOfPart[partOrdinal];
-            bool hasUv0 = Accessors[first].Part.HasUv0;
-
-            return kind switch
+            for (int i = first; i < Accessors.Count; i++)
             {
-                AccessorKind.Position => first,
-                AccessorKind.Normal => first + 1,
-                AccessorKind.TexCoord0 => first + 2,
-                _ => first + (hasUv0 ? 3 : 2),
-            };
+                if (Accessors[i].Kind == kind)
+                {
+                    return i;
+                }
+            }
+
+            return first;
         }
     }
+
+    /// <summary>
+    /// One channel of a source colour constant, as glTF wants it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The constant is an sRGB quantity and <c>baseColorFactor</c> is
+    /// linear.</b> Carried across unchanged, a material the artists called
+    /// <i>solid black</i> — the ink the eyes, the pupils and every line are
+    /// drawn in — reaches a viewer at about <c>#6C6068</c>, a mid grey, and was
+    /// reported as "black comes out grey".
+    /// </para>
+    /// <para>
+    /// Two measurements say the constant is sRGB, neither of them this build's
+    /// own reasoning. The game's colour table and its paper scans are the same
+    /// colour in the same space — its swatch for black is <c>0xFF342E35</c> and
+    /// the black paper decodes to <c>#332D33</c>, two counts apart, and kraft
+    /// agrees as well. And in the game, the parts that ink draws are black:
+    /// sampled off a screenshot they are darker than <c>#131313</c>, where the
+    /// linear reading predicts a mid grey that nothing in the picture shows.
+    /// </para>
+    /// <para>
+    /// The conversion also does the right thing to the multipliers, which are
+    /// the other population using this field: a material darkened to 0.9 of its
+    /// paper is drawn at 0.9 of it in the game, and that only holds if both
+    /// sides multiply in the same space. Every material whose constant is white
+    /// — the great majority — is unchanged, because 1 converts to 1.
+    /// </para>
+    /// <para>
+    /// This is a deliberate departure from the frozen Python reference, which
+    /// carries the constant across. It is the third, and the research repo's
+    /// §10.41 records it alongside the other two.
+    /// </para>
+    /// </remarks>
+    private static double Linear(double channel) =>
+        channel <= 0.04045
+            ? channel / 12.92
+            : System.Math.Pow((channel + 0.055) / 1.055, 2.4);
 }

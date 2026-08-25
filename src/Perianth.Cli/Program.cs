@@ -21,9 +21,19 @@ internal static class Program
           perianth extract --sdf-root DIR --path VIRTUAL --out DIR [options]
           perianth texture --from PNG --original DDS --out DIR --name TEXT [options]
           perianth material --editordata FILE --repoint OLD=NEW --out DIR --name TEXT
+          perianth geometry --mmb PATH --cameldata PATH --from GLB --out DIR --name TEXT
+          perianth item    --template MITEM --name TEXT --model VIRTUAL [route] --out DIR
+          perianth character --graph-template MGRAPHOBJECT --list
+          perianth character --graph-template MGRAPHOBJECT --npc-template MNPC
+                           --name TEXT --model VIRTUAL --out DIR
+          perianth prop    --layer MLAYER --list
+          perianth prop    --layer MLAYER --template NAME --name TEXT
+                           --graph-object VIRTUAL --at X,Y,Z --out DIR
           perianth patch   --make --edited FILE --original FILE --out DIR
           perianth patch   --make --new --edited FILE --replaces VIRTUAL --out DIR
           perianth patch   --apply --patch FILE --original FILE --out DIR --name TEXT
+          perianth costume --sdf-root DIR --list [--slot NAME]
+          perianth costume --sdf-root DIR --wear NAME [--wear NAME ...]
 
         Export options:
           --mmb PATH         model geometry
@@ -137,6 +147,140 @@ internal static class Program
         --verify DIR checks a finished mod folder and refuses if any remain.
         Run it before installing.
 
+        Geometry options:
+          --mmb PATH --cameldata PATH   the model to change
+          --from GLB         the mesh you edited in Blender
+          --out DIR --name TEXT   where to write the mod folder, and its name
+          --own-uvs          store the texture layout the mesh brought, on parts
+                             that would otherwise work theirs out from position
+          --dry-run          say what would change, and write nothing
+          --json             one line of machine-readable result instead of prose
+
+        A texture is painted on by one of two rules. 86% of parts work out where
+        each bit of image goes from where each point sits — a projection, which
+        is exactly right for the flat cut-outs all the game's art is, and wrong
+        for anything with sides, where one image is smeared down all of them.
+        The other 14% store the answer, and those take the layout your mesh
+        brings without being asked.
+
+        --own-uvs switches a part from the first rule to the second. It is off by
+        default because switching every part would grow the file and lose the
+        free reprojection a later reshape gets for nothing. A part that brought a
+        layout and was left working its own out is reported on every run, so the
+        choice is never made silently.
+
+        Item options:
+          --template MITEM   a shipped item of the slot wanted, to copy
+          --name TEXT        the new item's name, which is also its file's
+          --model VIRTUAL    the archive path of its .mmb
+          --display-name TEXT  what the menu shows, with --locpack
+          --locpack FILE     the extracted menus.locpack the name resolves through
+          --out DIR --mod-name TEXT   where to write the mod folder, and its name
+          --author/--version/--description/--preload-custom-assets  as for texture
+          --dry-run          say what would be written, and write nothing
+          --json             one line of machine-readable result instead of prose
+
+        And one or more routes by which the player gets it:
+          --vendors FILE --shop NAME [--game-state STATE]   sold
+          --inventory FILE --setting NAME [--count N]       given outright
+          --loot FILE --table NAME [--chance F]
+              [--quantity-min N] [--quantity-max N]         found
+          --recipes FILE --recipe-template NAME --recipe-name NAME
+              --recipe-item UID [--ingredient UID:COUNT ...]  crafted
+
+        The template's declared class is the slot — CostumeItemStreetHairLow and
+        its 25 siblings — so choosing what to copy is choosing where it is worn,
+        and nothing here sets a slot. Everything the template said that is not
+        named above is copied exactly, which is what keeps this small against a
+        schema of 887 classes.
+
+        Nothing inside an item says where it comes from: shops, chests and
+        recipes name items rather than the other way round. So an item with no
+        route is declared and unobtainable, and this says so rather than
+        refusing — the file is still worth writing while the route is decided.
+        Crafting is the one that does not stand alone: a recipe is itself an
+        item the player holds, so make that item too and give it a route.
+
+        Each economy file must be one this tool extracted, because its archive
+        path is read from the recorded provenance rather than guessed from where
+        it sits. A file written one folder out is a mod the game ignores while
+        looking as though it worked.
+
+        Character options:
+          --graph-template FILE  an extracted actor .mgraphobject, to copy
+          --list             the assets that graph object names
+          --npc-template FILE  an extracted .mnpc, to copy
+          --name TEXT        the new character's declared name
+          --model VIRTUAL    the .mmb it draws
+          --anim-system VIRTUAL  the .manimsys it animates through
+          --repoint OLD=NEW  move any other entry by name, repeatable
+          --display-name TEXT  what the game shows, with --locpack
+          --locpack FILE     the extracted menus.locpack the name resolves through
+          --content-root DIR a folder extracted from the archives, so the model
+                             and the rig can be read and checked against each other
+          --graph-path VIRTUAL  where to write the graph object
+          --npc-path VIRTUAL   where to write the definition
+          --out DIR --mod-name TEXT   where to write the mod folder, and its name
+          --author/--version/--description/--preload-custom-assets  as for texture
+          --dry-run          say what would be written, and write nothing
+          --json             one line of machine-readable result instead of prose
+
+        A character is two files. The graph object is what draws it, and making
+        a new one is a string-table substitution: copy a shipped one and change
+        the paths, leaving the graph itself alone. The .mnpc is what names that
+        graph object and gives the character a behaviour, a faction and a voice.
+
+        --model and --anim-system are conveniences over --repoint that ask the
+        template which entry they mean. That works because 1,236 of 1,250 actors
+        name exactly one .mmb; the rest refuse and say to name the entry
+        outright, rather than picking one.
+
+        Copying keeps the template's `: Parent` clause where it has one, so the
+        new character inherits whatever that declared — including fields the copy
+        never mentions. It is reported for that reason.
+
+        Prop options:
+          --layer MLAYER     an extracted layerdata.mlayer from camel/maps
+          --list             what that layer holds, and what each entity draws
+          --template NAME    a prop already in it, to copy
+          --name TEXT        what to call the copy
+          --graph-object VIRTUAL  the .mgraphobject it draws
+          --at X,Y,Z         where it stands
+          --out DIR --mod-name TEXT   where to write the mod folder, and its name
+          --author/--version/--description/--preload-custom-assets  as for texture
+          --dry-run          say what would be written, and write nothing
+          --json             one line of machine-readable result instead of prose
+
+        A prop is a layer entity carrying a matrix and naming a .mgraphobject,
+        which is what names the model — so placing one is a text edit and needs
+        no model writing at all. The record is copied rather than built: a prop
+        carries 21 fields and the game uses 22 different sets of them, so every
+        line not named above comes from the template exactly.
+
+        That means the template decides more than it looks. Its sphereRadius is
+        a culling bound describing *its* model, so a larger prop given it will
+        vanish while still on screen — and rendering the mod offline will not
+        show that, because an offline render does not cull. Its depth group and
+        rotation come across too. Run --list first: none of this is visible in
+        the layer afterwards.
+
+        The copy is placed in the template's own chunk, so it lands in a part of
+        the map the game already loads props from.
+
+        Costume options:
+          --sdf-root DIR     the game's archives, where the item list lives
+          --content-root DIR a folder extracted from them, instead of the archives
+          --list             everything wearable, or one --slot NAME of it
+          --wear NAME        an entry to put on, repeatable
+          --json             machine-readable instead of prose
+
+        `costume` draws nothing. It says what an outfit would draw and what it
+        would leave out, because those decisions are invisible in a GLB: a
+        hairstyle that produced no model and one nobody chose look identical in
+        the file. A headpiece names which cuts of a hairstyle may be worn under
+        it, so the answer to "why is my hair short" is which cut survived, and
+        the answer to "where did it go" is that none did.
+
         An extraction records where every file came from, so that a modified file
         can later be compared against its original, and its layout is the one the
         loose-file mod loader reads and --content-root resolves against. --flat
@@ -181,9 +325,34 @@ internal static class Program
             return MaterialCommand.Run(args[1..], output, error);
         }
 
+        if (string.Equals(args[0], "geometry", StringComparison.Ordinal))
+        {
+            return GeometryCommand.Run(args[1..], output, error);
+        }
+
+        if (string.Equals(args[0], "item", StringComparison.Ordinal))
+        {
+            return ItemCommand.Run(args[1..], output, error);
+        }
+
+        if (string.Equals(args[0], "character", StringComparison.Ordinal))
+        {
+            return CharacterCommand.Run(args[1..], output, error);
+        }
+
+        if (string.Equals(args[0], "prop", StringComparison.Ordinal))
+        {
+            return PropCommand.Run(args[1..], output, error);
+        }
+
         if (string.Equals(args[0], "patch", StringComparison.Ordinal))
         {
             return PatchCommand.Run(args[1..], output, error);
+        }
+
+        if (string.Equals(args[0], "costume", StringComparison.Ordinal))
+        {
+            return CostumeCommand.Run(args[1..], output, error);
         }
 
         if (!string.Equals(args[0], "export", StringComparison.Ordinal))

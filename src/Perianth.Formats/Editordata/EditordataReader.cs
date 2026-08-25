@@ -288,11 +288,13 @@ public static class EditordataReader
         }
 
         // Every value this record can contribute to an export must be finite.
-        // slot_50 is excluded deliberately: its W is a packed bitfield of raw
-        // UInt32 patterns rather than a float, so testing it for finiteness
+        // slot_50's RGB is the ambient term of the brightness scale and is
+        // therefore checked; its W is excluded deliberately, being a packed
+        // bitfield of raw UInt32 patterns rather than a float, so testing it
         // would refuse well-formed files over a value nothing reads as a number.
         if (!Finite(slot10) || !Finite(slot20) || !Finite(uvRepeat) ||
-            !Finite(slot30) || !Finite(slot40) || !Finite(slot60))
+            !Finite(slot30) || !Finite(slot40) || !Finite(slot60) ||
+            !float.IsFinite(slot50.X) || !float.IsFinite(slot50.Y) || !float.IsFinite(slot50.Z))
         {
             return Refusal.Malformed(DescribeCustom(section, record, "contains a non-finite value"));
         }

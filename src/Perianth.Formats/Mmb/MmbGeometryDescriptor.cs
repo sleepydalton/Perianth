@@ -39,4 +39,33 @@ public readonly record struct MmbGeometryDescriptor(
     /// it.
     /// </remarks>
     public bool IsIndexed => IndexCount != 0;
+
+    /// <summary>
+    /// Whether a mode-3 payload is exactly its identifiers and its index buffer,
+    /// with nothing between them and nothing after.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The predicate that says a payload may be <em>rebuilt</em> rather than
+    /// overwritten in place. A payload holding nothing else can be written afresh
+    /// at a different size, because there is nothing unaccounted for to relocate
+    /// or invent — and inventing is what the byte-identity oracle cannot check.
+    /// </para>
+    /// <para>
+    /// It is one expression for both kinds. A direct record's index count is
+    /// zero, so it reduces to the payload being identifiers alone. Measured over
+    /// 6,139 indexed records in 2,283 files: of the 1,595 whose identifiers are
+    /// <c>u16</c> and immediately followed by the index buffer — the population
+    /// this project writes — <b>every one accounts for every byte</b>. The rest
+    /// are a conventional interleaved vertex format, mostly effects, and mode 2.
+    /// Roadmap §10.58.
+    /// </para>
+    /// <para>
+    /// Checked per record rather than assumed from that number, so a part
+    /// carrying anything else keeps the in-place path and its limits.
+    /// </para>
+    /// </remarks>
+    public bool AccountsForEveryByte =>
+        IndexOffset == (long)VertexCount * sizeof(ushort) &&
+        PayloadLength == IndexOffset + ((long)IndexCount * sizeof(ushort));
 }

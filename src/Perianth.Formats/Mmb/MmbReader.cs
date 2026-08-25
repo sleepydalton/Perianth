@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Globalization;
 using System.Text;
@@ -10,206 +9,417 @@ using Perianth.Formats.Io;
 namespace Perianth.Formats.Mmb;
 
 /// <summary>
-/// Finds and decodes the model-part records in an MMB file.
+/// Reads an MMB model file: its node table, and the model parts that follow.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>This is a signature scan, not a container grammar.</b> Specification
-/// section 5.1 is explicit that the enclosing MMB structure was never derived:
-/// what is proven, over the corpus and through the exporter, is that records
-/// matching this exact envelope shape are the model parts and that nothing else
-/// matches it. The scan is kept behind this type on purpose, so that no caller
-/// can come to depend on searching bytes.
+/// <b>This reads the container, and it used to scan for it.</b> Specification
+/// §5.1 said the enclosing structure had never been derived and located records
+/// by matching a signature. Roadmap §10.47 and §10.53 derived it from the
+/// loader: a magic and version byte, a node table, a part count, and a versioned
+/// part grammar, read front to back.
 /// </para>
 /// <para>
-/// Two kinds of failure are possible while scanning and they are not the same.
-/// A byte offset that does not match the envelope shape is simply not a record,
-/// and scanning moves on — the file is a container this reader does not claim to
-/// parse, so most offsets are not records. But once an envelope has matched, its
-/// descriptor describes a record that genuinely exists, and an incoherent one is
-/// a refusal rather than something to skip past. Silently dropping a located
-/// record would lose geometry with no diagnostic, which is the guessing this
-/// project refuses to do.
+/// The signature turned out to be this grammar with two counts pinned to
+/// constants — §10.54. Its unexplained seven-byte suffix was a zero matrix
+/// count, a LOD count of one, and a flags word; its ten opaque descriptor words
+/// were one version-11 LOD entry. So the scan was a special case, and it was
+/// measured to be a very good one: of 441,865 real parts, 441,864 matched. The
+/// one that did not carries matrices, and the scan did not lose it quietly — it
+/// reported the whole file as holding no records at all. Absence and "cannot
+/// represent this" were indistinguishable, which is the failure this reader
+/// exists to end.
+/// </para>
+/// <para>
+/// <b>Every unreadable thing is a refusal.</b> There is no position at which
+/// this gives up and moves on, because there is no searching left to do: a
+/// field that does not parse is a file that is not what it claims to be.
 /// </para>
 /// </remarks>
 public static class MmbReader
 {
-    private const int MinimumLabelLength = 1;
+    /// <summary>The plain container's magic, before the version byte.</summary>
+    private static ReadOnlySpan<byte> Magic => "MMB"u8;
+
+    /// <summary>
+    /// Two container variants this reader does not decode, kept named so they
+    /// refuse for what they are.
+    /// </summary>
+    /// <remarks>
+    /// <c>MUCM</c> is an alternative envelope and <c>MCMP</c> a compressed one
+    /// carrying a codec id and both lengths. Two of the 2,285 files measured are
+    /// <c>MUCM</c>; neither had been noticed while the reader scanned, because a
+    /// scan never has to know what container it is inside.
+    /// </remarks>
+    private static ReadOnlySpan<byte> AlternativeMagic => "MUCM"u8;
+
+    private static ReadOnlySpan<byte> CompressedMagic => "MCMP"u8;
+
+    /// <summary>Below this version the loader reads no part body at all.</summary>
+    private const int FirstVersionWithParts = 6;
+
+    private const int VersionMask = 0x3F;
+    private const int ValueByteCount = 48;
     private const int ValueCount = 12;
-    private const float ValueMagnitudeLimit = 1e6f;
+    private const int MatrixByteCount = 64;
+    private const int NodeTrailerBytes = 2;
     private const int DeclarationStride = 4;
     private const int DescriptorWordCount = 10;
-    private const byte FirstPrintableAscii = 0x20;
-    private const byte LastPrintableAscii = 0x7E;
 
-    /// <summary>The exact bytes that separate the declarations from the descriptor.</summary>
-    private static ReadOnlySpan<byte> DeclarationSuffix => [0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xF0];
-
-    /// <summary>Decodes every model-part record in <paramref name="file"/>.</summary>
+    /// <summary>Reads every node and model part in <paramref name="file"/>.</summary>
     public static Result<MmbModel> Read(SourceFile file)
     {
         ArgumentNullException.ThrowIfNull(file);
         ReadOnlyMemory<byte> memory = file.Memory;
         ReadOnlySpan<byte> data = memory.Span;
+        SpanReader reader = new(data);
 
-        // Scanning ascending means a later candidate always has the greater
-        // start, so overwriting on a shared descriptor is exactly section 5.1's
-        // "retain the latest record start". That rule is corpus-derived and its
-        // reasoning is not reconstructible from the format; it is ported as
-        // written, and it is what keeps a printable coincidence nested inside a
-        // real record from being reported as a second record.
-        Dictionary<int, EnvelopeCandidate> byDescriptor = [];
-        for (int start = 0; start < data.Length; start++)
+        Result<MmbHeader> header = ReadHeader(ref reader);
+        if (!header.IsSuccess)
         {
-            if (TryMatchEnvelope(data, start, out EnvelopeCandidate candidate))
+            return header.Refusal;
+        }
+
+        int version = header.Value.Version;
+
+        if (!reader.TryReadUInt32(out uint nodeCount))
+        {
+            return Refusal.Malformed("The file ends where its node count should be.");
+        }
+
+        ImmutableArray<MmbNode>.Builder nodes =
+            ImmutableArray.CreateBuilder<MmbNode>((int)Math.Min(nodeCount, 1u << 16));
+
+        for (uint node = 0; node < nodeCount; node++)
+        {
+            // A node is a name, a 4x4 matrix and a trailing short. Nothing in
+            // export reads them -- the posed hierarchy comes from the setup
+            // ANIM -- but they are kept rather than walked past, because a
+            // writer must put them back and a skipped field is invisible until
+            // one tries.
+            if (!reader.TryReadUInt16(out ushort nameLength) ||
+                !reader.TryReadBytes(nameLength, out _))
             {
-                byDescriptor[candidate.DescriptorOffset] = candidate;
+                return Refusal.Malformed(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"The node table ends early, at node {node} of {nodeCount}."));
             }
+
+            int nameAt = reader.Position - nameLength;
+            if (!reader.TryReadBytes(MatrixByteCount, out _) ||
+                !reader.TryReadUInt16(out ushort trailer))
+            {
+                return Refusal.Malformed(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"The node table ends early, at node {node} of {nodeCount}."));
+            }
+
+            nodes.Add(new MmbNode(
+                memory.Slice(nameAt, nameLength),
+                memory.Slice(nameAt + nameLength, MatrixByteCount),
+                trailer));
         }
 
-        if (byDescriptor.Count == 0)
+        if (!reader.TryReadUInt32(out uint partCount))
         {
-            return Refusal.Malformed(
-                "No model-part records were found. The file does not contain the envelope this reader recognizes.");
+            return Refusal.Malformed("The file ends where its model-part count should be.");
         }
 
-        List<EnvelopeCandidate> candidates = [.. byDescriptor.Values];
-        candidates.Sort(static (left, right) => left.Start.CompareTo(right.Start));
+        ImmutableArray<MmbModelPart>.Builder parts =
+            ImmutableArray.CreateBuilder<MmbModelPart>((int)Math.Min(partCount, 1u << 16));
 
-        ImmutableArray<MmbModelPart>.Builder parts = ImmutableArray.CreateBuilder<MmbModelPart>(candidates.Count);
-        for (int ordinal = 0; ordinal < candidates.Count; ordinal++)
+        for (uint ordinal = 0; ordinal < partCount; ordinal++)
         {
-            Result<MmbModelPart> part = BuildPart(memory, candidates[ordinal], ordinal);
+            Result<MmbModelPart?> part = ReadPart(memory, ref reader, version, parts.Count);
             if (!part.IsSuccess)
             {
                 return part.Refusal;
             }
 
-            parts.Add(part.Value);
+            // A part with an empty name carries no body, and the loader reads
+            // nothing further for it. It is a hole in the table rather than
+            // geometry, so it takes no ordinal.
+            if (part.Value is MmbModelPart present)
+            {
+                parts.Add(present);
+            }
         }
 
-        return Result.Ok(new MmbModel(file.Path, parts.MoveToImmutable()));
+        if (parts.Count == 0)
+        {
+            return Refusal.Malformed(
+                "The file declares no model parts that draw anything.");
+        }
+
+        return Result.Ok(new MmbModel(
+            file.Path, version, header.Value.Flags, header.Value.DeclaredLength,
+            nodes.ToImmutable(), parts.ToImmutable()));
+    }
+
+    /// <summary>What the four-byte magic and the word after it said.</summary>
+    private readonly record struct MmbHeader(int Version, int Flags, uint DeclaredLength);
+
+    /// <summary>The magic and version byte, and the declared length after it.</summary>
+    private static Result<MmbHeader> ReadHeader(ref SpanReader reader)
+    {
+        if (!reader.TryReadBytes(4, out ReadOnlySpan<byte> magic))
+        {
+            return Refusal.Malformed("The file is too short to be a model.");
+        }
+
+        if (magic.SequenceEqual(AlternativeMagic) || magic.SequenceEqual(CompressedMagic))
+        {
+            return Refusal.Unsupported(string.Create(
+                CultureInfo.InvariantCulture,
+                $"This model is in the '{Encoding.ASCII.GetString(magic)}' container, which this build does not decode. Only the plain 'MMB' container is read."));
+        }
+
+        if (!magic[..3].SequenceEqual(Magic))
+        {
+            return Refusal.Malformed("This is not a model file: it does not begin with 'MMB'.");
+        }
+
+        int version = magic[3] & VersionMask;
+        if (version < FirstVersionWithParts)
+        {
+            return Refusal.Unsupported(string.Create(
+                CultureInfo.InvariantCulture,
+                $"This model declares version {version}, which stores no part geometry."));
+        }
+
+        // The word after the magic is the file's own length on all 2,283 files
+        // measured. It is kept rather than trusted: nothing seeks by it, and a
+        // writer sets it from the length it actually produced.
+        if (!reader.TryReadUInt32(out uint declaredLength))
+        {
+            return Refusal.Malformed("The file ends inside its header.");
+        }
+
+        return Result.Ok(new MmbHeader(version, magic[3] >> 6, declaredLength));
     }
 
     /// <summary>
-    /// Whether an envelope begins at <paramref name="start"/>. A false answer
-    /// means "not a record here", never "this file is broken".
+    /// One model part, or null where the table holds an empty entry.
     /// </summary>
-    private static bool TryMatchEnvelope(ReadOnlySpan<byte> data, int start, out EnvelopeCandidate candidate)
+    private static Result<MmbModelPart?> ReadPart(
+        ReadOnlyMemory<byte> memory, ref SpanReader reader, int version, int ordinal)
     {
-        candidate = default;
+        ReadOnlySpan<byte> data = memory.Span;
+        int start = reader.Position;
 
-        SpanReader reader = new(data);
-        if (!reader.TrySeek(start) || !reader.TryReadUInt16(out ushort labelLength))
+        if (!reader.TryReadUInt16(out ushort nameLength) ||
+            !reader.TryReadBytes(nameLength, out ReadOnlySpan<byte> name))
         {
-            return false;
+            return Malformed(ordinal, "has a name that runs past the end of the file");
         }
 
-        // There is no upper bound on the label beyond the file itself. The
-        // reference capped it at 240 bytes, which hid ten of the corpus's models
-        // behind a constant nothing justified: labels reach 447 bytes, and the
-        // longest belong to real model parts whose absence made four constant
-        // pools look too long. A cap also protects nothing the printable-ASCII
-        // check below does not protect better — every byte of a label must be
-        // printable, so a false match gets exponentially less likely as the
-        // claimed length grows, and it is the *short* candidates that are easy
-        // to forge. TryReadBytes is what keeps the read in bounds.
-        if (labelLength < MinimumLabelLength)
+        // The loader has a branch for these and no file exercises it: zero of
+        // 441,865 entries measured. Skipping one would drop it from a file a
+        // writer then rebuilt without it, so it refuses instead.
+        if (nameLength == 0)
         {
-            return false;
+            return Refusal.Unsupported(string.Create(
+                CultureInfo.InvariantCulture,
+                $"Model part {ordinal} has no name, which this build has never seen and cannot write back."));
         }
 
-        int labelOffset = reader.Position;
-        if (!reader.TryReadBytes(labelLength, out ReadOnlySpan<byte> label))
-        {
-            return false;
-        }
-
-        foreach (byte character in label)
-        {
-            if (character is < FirstPrintableAscii or > LastPrintableAscii)
-            {
-                return false;
-            }
-        }
+        int nameOffset = reader.Position - nameLength;
 
         ImmutableArray<float>.Builder values = ImmutableArray.CreateBuilder<float>(ValueCount);
         for (int i = 0; i < ValueCount; i++)
         {
-            if (!reader.TryReadSingle(out float value) ||
-                !float.IsFinite(value) ||
-                Math.Abs(value) >= ValueMagnitudeLimit)
+            if (!reader.TryReadSingle(out float value))
             {
-                return false;
+                return Malformed(ordinal, "ends inside its transform block");
             }
 
             values.Add(value);
         }
 
-        if (!reader.TryReadUInt16(out ushort zeroPrefix) || zeroPrefix != 0)
+        // Two bytes the older versions do not carry. Flags to the loader and
+        // unread here, but they must be consumed or every later field is off by
+        // their width -- the shifted cursor this project treats as the
+        // characteristic grammar fault -- and kept, or a writer cannot restore
+        // them.
+        int flagsAt = reader.Position;
+        int flagCount = (version >= 8 ? 1 : 0) + (version > 9 ? 1 : 0);
+        if (!reader.TrySkip(flagCount))
         {
-            return false;
+            return Malformed(ordinal, "ends where its flag bytes should be");
         }
 
-        if (!reader.TryReadUInt16(out ushort declarationCount))
+        if (!reader.TryReadUInt16(out ushort declarationCount) ||
+            !reader.TryReadBytes((long)declarationCount * DeclarationStride, out _))
         {
-            return false;
+            return Malformed(ordinal, "has a declaration block that runs past the end of the file");
         }
 
-        int declarationOffset = reader.Position;
-        if (!reader.TrySkip((long)declarationCount * DeclarationStride))
+        int declarationOffset = reader.Position - (declarationCount * DeclarationStride);
+
+        if (!reader.TryReadUInt16(out ushort matrixCount))
         {
-            return false;
+            return Malformed(ordinal, "ends where its matrix count should be");
         }
 
-        if (!reader.TryReadBytes(DeclarationSuffix.Length, out ReadOnlySpan<byte> suffix) ||
-            !suffix.SequenceEqual(DeclarationSuffix))
+        int matrixOffset = reader.Position;
+        if (!reader.TrySkip((long)matrixCount * (MatrixByteCount + NodeTrailerBytes)))
         {
-            return false;
+            return Malformed(ordinal, "has a matrix block that runs past the end of the file");
         }
 
-        int descriptorOffset = reader.Position;
-        if (!reader.TrySkip((long)DescriptorWordCount * sizeof(uint)))
+        int matrixBytes = reader.Position - matrixOffset;
+
+        if (!reader.TryReadByte(out byte lodCount))
         {
-            return false;
+            return Malformed(ordinal, "ends where its level-of-detail count should be");
         }
 
-        candidate = new EnvelopeCandidate(
-            start,
-            labelOffset,
-            labelLength,
+        uint lodFlags = 0;
+        if (version >= 7 && !reader.TryReadUInt32(out lodFlags))
+        {
+            return Malformed(ordinal, "ends where its level-of-detail flags should be");
+        }
+
+        // A descriptor is one LOD entry. Every one of 441,865 parts measured
+        // declares exactly one, so more than one is refused rather than
+        // silently reduced to the first: a model whose levels of detail were
+        // dropped would export and draw, at whichever detail happened to come
+        // first.
+        if (lodCount != 1)
+        {
+            return Refusal.Unsupported(string.Create(
+                CultureInfo.InvariantCulture,
+                $"Model part {ordinal} declares {lodCount} levels of detail, and this build reads models with one."));
+        }
+
+        Result<MmbGeometryDescriptor> descriptor = ReadDescriptor(ref reader, version, ordinal);
+        if (!descriptor.IsSuccess)
+        {
+            return descriptor.Refusal;
+        }
+
+        int tailAt = reader.Position;
+        if (!SkipTail(ref reader, version))
+        {
+            return Malformed(ordinal, "ends inside the fields after its descriptor");
+        }
+
+        int end = reader.Position;
+
+        Result<MmbModelPart> built = BuildPart(
+            memory, data, descriptor.Value, ordinal,
+            new ByteRange(start, end - start),
+            nameOffset, nameLength,
             values.MoveToImmutable(),
-            declarationCount,
-            declarationOffset,
-            descriptorOffset,
-            reader.Position);
-        return true;
+            declarationCount, declarationOffset,
+            matrixCount, matrixOffset, matrixBytes,
+            memory.Slice(flagsAt, flagCount), lodFlags,
+            memory.Slice(tailAt, end - tailAt));
+
+        return built.IsSuccess ? Result.Ok<MmbModelPart?>(built.Value) : built.Refusal;
     }
 
-    private static Result<MmbModelPart> BuildPart(ReadOnlyMemory<byte> memory, EnvelopeCandidate candidate, int ordinal)
+    /// <summary>
+    /// The descriptor: one level-of-detail entry, whose width the version sets.
+    /// </summary>
+    /// <remarks>
+    /// Version 11 writes all ten words. Version 9 omits the last, and below 9
+    /// two more; below 8, one word is a copy of another rather than written.
+    /// The omitted words are left zero, which is what the loader leaves them.
+    /// </remarks>
+    private static Result<MmbGeometryDescriptor> ReadDescriptor(
+        ref SpanReader reader, int version, int ordinal)
     {
-        ReadOnlySpan<byte> data = memory.Span;
-        SpanReader reader = new(data);
-        if (!reader.TrySeek(candidate.DescriptorOffset))
-        {
-            return Malformed(ordinal, "has a descriptor outside the file");
-        }
-
         Span<uint> words = stackalloc uint[DescriptorWordCount];
-        for (int word = 0; word < DescriptorWordCount; word++)
+
+        for (int word = 0; word < 5; word++)
         {
-            if (!reader.TryReadUInt32(out uint value))
+            if (!reader.TryReadUInt32(out words[word]))
             {
                 return Malformed(ordinal, "has a truncated descriptor");
             }
-
-            words[word] = value;
         }
 
-        MmbGeometryDescriptor descriptor = new(
-            words[0], words[1], words[2], words[3], words[4],
-            words[5], words[6], words[7], words[8], words[9]);
+        if (version >= 8)
+        {
+            if (!reader.TryReadUInt32(out words[5]))
+            {
+                return Malformed(ordinal, "has a truncated descriptor");
+            }
+        }
+        else
+        {
+            // The loader copies word 4 into word 5 rather than reading one.
+            words[5] = words[4];
+        }
 
+        if (!reader.TryReadUInt32(out words[6]))
+        {
+            return Malformed(ordinal, "has a truncated descriptor");
+        }
+
+        if (version > 8)
+        {
+            if (!reader.TryReadUInt32(out words[7]) || !reader.TryReadUInt32(out words[8]))
+            {
+                return Malformed(ordinal, "has a truncated descriptor");
+            }
+        }
+
+        if (version > 10 && !reader.TryReadUInt32(out words[9]))
+        {
+            return Malformed(ordinal, "has a truncated descriptor");
+        }
+
+        return Result.Ok(new MmbGeometryDescriptor(
+            words[0], words[1], words[2], words[3], words[4],
+            words[5], words[6], words[7], words[8], words[9]));
+    }
+
+    /// <summary>The fields between the descriptor and the next part.</summary>
+    private static bool SkipTail(ref SpanReader reader, int version)
+    {
+        if (!reader.TrySkip(sizeof(uint) * 2) || !reader.TryReadByte(out byte extra))
+        {
+            return false;
+        }
+
+        if (!reader.TrySkip((long)extra * sizeof(uint)) || !reader.TrySkip(sizeof(ushort)))
+        {
+            return false;
+        }
+
+        if (version >= 8 && !reader.TrySkip(sizeof(ushort)))
+        {
+            return false;
+        }
+
+        // Four words: a flag, and the three the first pass keeps. The last is
+        // the payload length below version 9, where payloads are concatenated
+        // after the table and the loader tracks a running cursor. From version 9
+        // the descriptor carries its own absolute offset and length, which is
+        // what this build reads.
+        return reader.TrySkip(sizeof(uint) * 4);
+    }
+
+    private static Result<MmbModelPart> BuildPart(
+        ReadOnlyMemory<byte> memory,
+        ReadOnlySpan<byte> data,
+        MmbGeometryDescriptor descriptor,
+        int ordinal,
+        ByteRange envelope,
+        int nameOffset,
+        int nameLength,
+        ImmutableArray<float> values,
+        int declarationCount,
+        int declarationOffset,
+        int matrixCount,
+        int matrixOffset,
+        int matrixBytes,
+        ReadOnlyMemory<byte> flagBytes,
+        uint lodFlags,
+        ReadOnlyMemory<byte> tailBytes)
+    {
         if (descriptor.VertexCount == 0)
         {
             return Malformed(ordinal, "declares no vertices");
@@ -231,15 +441,20 @@ public static class MmbReader
 
         return Result.Ok(new MmbModelPart(
             ordinal,
-            new ByteRange(candidate.Start, candidate.End - candidate.Start),
-            Encoding.ASCII.GetString(data.Slice(candidate.LabelOffset, candidate.LabelLength)),
-            memory.Slice(candidate.LabelOffset, candidate.LabelLength),
-            candidate.Values,
-            candidate.DeclarationCount,
-            memory.Slice(candidate.DeclarationOffset, candidate.DeclarationCount * DeclarationStride),
+            envelope,
+            Encoding.ASCII.GetString(data.Slice(nameOffset, nameLength)),
+            memory.Slice(nameOffset, nameLength),
+            values,
+            declarationCount,
+            memory.Slice(declarationOffset, declarationCount * DeclarationStride),
             descriptor,
             memory.Slice(payloadStart, payloadLength),
-            indices.Value));
+            indices.Value,
+            matrixCount,
+            memory.Slice(matrixOffset, matrixBytes),
+            flagBytes,
+            lodFlags,
+            tailBytes));
     }
 
     private static Result<ImmutableArray<int>> ReadStoredIndices(
@@ -320,14 +535,4 @@ public static class MmbReader
     private static Refusal Malformed(int ordinal, string problem) =>
         Refusal.Malformed(string.Create(
             CultureInfo.InvariantCulture, $"Model part {ordinal} {problem}."));
-
-    private readonly record struct EnvelopeCandidate(
-        int Start,
-        int LabelOffset,
-        int LabelLength,
-        ImmutableArray<float> Values,
-        int DeclarationCount,
-        int DeclarationOffset,
-        int DescriptorOffset,
-        int End);
 }
