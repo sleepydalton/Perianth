@@ -427,7 +427,7 @@ public sealed class ExportViewModelTests
         ExportViewModel pane = Pane(Assets(setup: null, Idle), Idle);
         pane.StagedCount = () => 1;
 
-        Assert.Equal("Using 1 unsaved edit from the Textures tab.", pane.ChangesNote);
+        Assert.Equal("Using 1 unsaved edit of your own.", pane.ChangesNote);
     }
 
     [Fact]

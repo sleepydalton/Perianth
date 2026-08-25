@@ -47,7 +47,7 @@ public sealed class GlbWriterMaterialTests
     }
 
     [Fact]
-    public void An_identity_scale_writes_no_texture_transform_and_no_extension_list()
+    public void An_identity_scale_writes_no_texture_transform()
     {
         JsonElement gltf = Json(Write(OneMaterial(TextureScale.Identity)));
 
@@ -55,7 +55,12 @@ public sealed class GlbWriterMaterialTests
             .GetProperty("pbrMetallicRoughness").GetProperty("baseColorTexture");
 
         Assert.False(texture.TryGetProperty("extensions", out _));
-        Assert.False(gltf.TryGetProperty("extensionsUsed", out _));
+
+        // The extension list is not empty, though: every material is unlit, so
+        // KHR_materials_unlit is always declared and the texture transform is
+        // the only conditional entry.
+        Assert.Equal(["KHR_materials_unlit"], gltf.GetProperty("extensionsUsed")
+            .EnumerateArray().Select(v => v.GetString() ?? string.Empty).ToArray());
     }
 
     [Fact]
@@ -72,8 +77,9 @@ public sealed class GlbWriterMaterialTests
         Assert.Equal([10, 4], transform.GetProperty("scale").EnumerateArray()
             .Select(v => v.GetInt32()).ToArray());
 
-        // The extension is declared exactly once, at the top level.
-        Assert.Equal(["KHR_texture_transform"], gltf.GetProperty("extensionsUsed")
+        // The extension is declared exactly once, at the top level, beside the
+        // unlit declaration every material carries.
+        Assert.Equal(["KHR_texture_transform", "KHR_materials_unlit"], gltf.GetProperty("extensionsUsed")
             .EnumerateArray().Select(v => v.GetString() ?? string.Empty).ToArray());
 
         // No offset accompanies the scale: the V orientation is the engine's.
@@ -118,9 +124,19 @@ public sealed class GlbWriterMaterialTests
         // 17 of 25 on a prop that has no setup ANIM to be posed by. That is a
         // deliberate deviation from the frozen reference; see the baseline note
         // and Roadmap §6.13.
+        // "extensions" closes it, carrying KHR_materials_unlit: the camel shader
+        // is forward and writes its colour straight out with no normal anywhere
+        // in the path, so declaring metallic-roughness alone says the opposite
+        // of what the source is and a viewer with no lamp draws it black. The
+        // fourth deliberate deviation from the frozen reference; see the
+        // baseline note and Roadmap §10.125.
         Assert.Equal(
-            ["name", "pbrMetallicRoughness", "emissiveTexture", "emissiveFactor", "alphaMode", "doubleSided"],
+            ["name", "pbrMetallicRoughness", "emissiveTexture", "emissiveFactor", "alphaMode",
+             "doubleSided", "extensions"],
             keys);
+
+        Assert.True(material.GetProperty("extensions")
+            .TryGetProperty("KHR_materials_unlit", out _));
 
         Assert.Equal(1, material.GetProperty("emissiveTexture").GetProperty("index").GetInt32());
         double[] factor = material.GetProperty("emissiveFactor").EnumerateArray().Select(v => v.GetDouble()).ToArray();

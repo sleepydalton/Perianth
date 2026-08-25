@@ -102,36 +102,187 @@ public sealed class SceneMergeTests
     }
 
     [Fact]
-    public void What_is_worn_replaces_what_it_covers()
+    public void What_is_worn_is_drawn_over_the_body_rather_than_instead_of_it()
     {
-        // Both hang a mesh off the joint named "chest", so they are competing
-        // for one place on the body. Drawing both is what put a costume beneath
-        // a character and out of sight.
+        // Both hang a mesh off the joint named "chest". This used to take the
+        // character's out, which deleted whole limbs elsewhere: the arm is one
+        // mesh from shoulder to wrist, so a short sleeve took the forearm with
+        // it. The piece is drawn in front, so it hides as much as its art
+        // reaches and the rest stays visible, which is the point.
         ExportScene character = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["chest", "skin"]);
         ExportScene worn = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["chest", "shirt"]);
 
         ExportScene merged = Merged([character, worn]);
 
-        Assert.Single(merged.Model.Parts);
-        Assert.Single(merged.Materials.MaterialOfPart);
+        Assert.Equal(2, merged.Model.Parts.Length);
+        Assert.Equal(2, merged.Materials.MaterialOfPart.Length);
     }
 
     [Fact]
-    public void What_is_worn_on_top_replaces_nothing_beneath_it()
+    public void What_is_worn_on_top_does_not_take_the_feet_off()
     {
-        // Face paint hangs off the joint the character's own skull hangs from,
-        // and a joint holds many parts, so replacing there deletes the head
-        // rather than covering it. Measured in the archives: one makeup piece
-        // adds a single decal at the eye joint and was taking all five of the
-        // character's eye meshes with it.
-        ExportScene character = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["skull", "face"]);
-        ExportScene worn = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["skull", "paint"])
+        // Only a garment stands where the character's feet do. Something worn
+        // on top -- face paint, spectacles -- draws over the body and takes
+        // nothing off, so it must not reach the pin either. Stated on the pin
+        // because that is now the only thing removal can reach: on any ordinary
+        // joint both pieces are kept whatever Replaces says, so a fixture there
+        // would pass without the flag being read at all.
+        ExportScene character = Pinned("foot", "HIDE_PIN__8", "toes");
+        ExportScene worn = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["foot", "anklet"])
             with { Replaces = false };
+
+        Assert.Equal(2, Merged([character, worn]).Model.Parts.Length);
+    }
+
+    [Fact]
+    public void A_piece_lying_entirely_behind_the_character_is_reflected_onto_its_own_plane()
+    {
+        // Every hairstyle is authored behind the whole character, further back
+        // than its shoes, and the game draws hair in front of the head. The
+        // piece is reflected about the plane it sits on: its frontmost depth
+        // lands at that depth's own magnitude.
+        ExportScene character = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["skull", "head"]);
+        ExportScene worn = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["hair_jnt", "hair"], depth: -1);
 
         ExportScene merged = Merged([character, worn]);
 
-        Assert.Equal(2, merged.Model.Parts.Length);
-        Assert.Equal(2, merged.Materials.MaterialOfPart.Length);
+        // The fixture's frontmost is depth + 0.01, so -0.99 reflects to +0.99.
+        Assert.Equal(0.99, Front(merged, mesh: 1), precision: 6);
+    }
+
+    [Fact]
+    public void A_reflected_piece_keeps_a_trailing_part_trailing()
+    {
+        // The rule reflects the plane, not the art. Negating the geometry would
+        // land the same plane in the same place and turn a cut with a trailing
+        // part inside out -- a ponytail authored furthest back would come out
+        // furthest forward, through the face. This is what separates the two,
+        // and it is the only assertion that can.
+        ExportScene character = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["skull", "head"]);
+        ExportScene worn = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["hair_jnt", "hair"], depth: -1);
+
+        ExportScene merged = Merged([character, worn]);
+
+        // Authored -1.00 .. -0.99; reflected +0.98 .. +0.99. The trailing point
+        // is still the rearmost of the two, which negation would reverse.
+        Assert.Equal(0.98, Back(merged, mesh: 1), precision: 6);
+        Assert.True(Back(merged, mesh: 1) < Front(merged, mesh: 1),
+            "the part authored furthest back should still be furthest back");
+    }
+
+    [Fact]
+    public void A_piece_that_interleaves_with_the_character_is_left_alone()
+    {
+        // 247 of the 399 entries that draw anything do this -- costume bodies
+        // and gloves whose parts sit between the character's chest and its arms.
+        // A rule that stacked everything worn in front would reorder all of
+        // them, and nothing says they are wrong today.
+        ExportScene character = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["skull", "head"]);
+        // Straddling: it starts behind the character's rearmost and ends before
+        // the character's frontmost, which is the shape a costume body has. A
+        // guard that only asked "does it end behind the front" would move this.
+        ExportScene worn = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["hat_jnt", "hat"], depth: -0.005);
+
+        ExportScene merged = Merged([character, worn]);
+
+        Assert.Equal(0.005, Front(merged, mesh: 1), precision: 6);
+    }
+
+    [Fact]
+    public void A_piece_already_in_front_is_left_alone()
+    {
+        // The eyewear and most headwear, 78 entries. Moving them would be a
+        // second, invisible change riding on the one hair needs.
+        ExportScene character = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["skull", "head"]);
+        ExportScene worn = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["specs_jnt", "specs"], depth: 5);
+
+        ExportScene merged = Merged([character, worn]);
+
+        Assert.Equal(5.01, Front(merged, mesh: 1), precision: 6);
+    }
+
+    /// <summary>The frontmost depth a merged scene draws one mesh at.</summary>
+    private static double Front(ExportScene merged, int mesh)
+    {
+        SceneGraph graph = merged.Graph!;
+        for (int node = 0; node < graph.Nodes.Length; node++)
+        {
+            if (graph.Nodes[node].Mesh != mesh)
+            {
+                continue;
+            }
+
+            // Two levels: the attachment hangs off a joint, and only the root
+            // above it can have been moved.
+            double above = 0;
+            for (int outer = 0; outer < graph.Nodes.Length; outer++)
+            {
+                if (graph.Nodes[outer].Children.Contains(node))
+                {
+                    above = graph.Nodes[outer].Translation.Z;
+                    for (int root = 0; root < graph.Nodes.Length; root++)
+                    {
+                        if (graph.Nodes[root].Children.Contains(outer))
+                        {
+                            above += graph.Nodes[root].Translation.Z;
+                        }
+                    }
+                }
+            }
+
+            return above + merged.Model.Parts[mesh].Positions.Max(p => p.Z);
+        }
+
+        throw new Xunit.Sdk.XunitException($"no node draws mesh {mesh}");
+    }
+
+    /// <summary>The rearmost depth a merged scene draws one mesh at.</summary>
+    /// <remarks>
+    /// The counterpart of <see cref="Front"/>, and the only way to tell a
+    /// reflection of the plane from a negation of the art: both put the
+    /// frontmost point in the same place and disagree about everything behind
+    /// it.
+    /// </remarks>
+    private static double Back(ExportScene merged, int mesh) =>
+        Front(merged, mesh)
+        - (merged.Model.Parts[mesh].Positions.Max(p => p.Z)
+            - merged.Model.Parts[mesh].Positions.Min(p => p.Z));
+
+    [Fact]
+    public void A_mesh_on_a_pin_is_on_the_joint_the_pin_hangs_from()
+    {
+        // The character's feet do not hang off a foot joint: they hang off a
+        // node the rig calls HIDE_PIN, and there are 50 of them, every one
+        // parented to a foot joint. A costume's feet hang off those joints
+        // directly, so the names never meet and a dressed character exports two
+        // pairs of feet.
+        ExportScene character = Pinned("foot", "HIDE_PIN__8", "toes");
+        ExportScene worn = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["foot", "boot"]);
+
+        Assert.Single(Merged([character, worn]).Model.Parts);
+    }
+
+    [Fact]
+    public void An_ordinary_node_between_a_mesh_and_a_covered_joint_is_not_a_pin()
+    {
+        // The pin is followed by name because the rig names it, and only the
+        // pin. Following any intermediate node would make this "remove
+        // everything below a covered joint", which is a subtree rule nobody
+        // measured and which would take parts nothing is standing in for.
+        ExportScene character = Pinned("foot", "ankle", "toes");
+        ExportScene worn = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["foot", "boot"]);
+
+        Assert.Equal(2, Merged([character, worn]).Model.Parts.Length);
+    }
+
+    [Fact]
+    public void A_pin_is_followed_one_level_and_no_further()
+    {
+        // A mesh two nodes below the pin is not what the pin carries.
+        ExportScene character = Deep("foot", "HIDE_PIN__8", "under", "toes");
+        ExportScene worn = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["foot", "boot"]);
+
+        Assert.Equal(2, Merged([character, worn]).Model.Parts.Length);
     }
 
     [Fact]
@@ -249,6 +400,26 @@ public sealed class SceneMergeTests
 
     // --- fixtures ------------------------------------------------------------
 
+    /// <summary>A joint, a node under it, and a mesh on that: the pin shape.</summary>
+    private static ExportScene Pinned(string joint, string pin, string mesh) =>
+        Chain([joint, pin, mesh], meshAt: 2);
+
+    /// <summary>The same, one level deeper.</summary>
+    private static ExportScene Deep(string joint, string pin, string under, string mesh) =>
+        Chain([joint, pin, under, mesh], meshAt: 3);
+
+    private static ExportScene Chain(string[] names, int meshAt)
+    {
+        ExportScene plain = Scene(parts: 1, images: 1, materials: 1, nodeNames: ["a", "b"]);
+        SceneGraph graph = new(
+            [.. names.Select((n, i) => new SceneNode(
+                n, i + 1 < names.Length ? [i + 1] : [], default, default, default,
+                i == meshAt ? 0 : null))],
+            [0]);
+
+        return plain with { Graph = graph };
+    }
+
     private static ExportScene Merged(ImmutableArray<ExportScene> scenes)
     {
         Result<ExportScene> merged = SceneMerge.Merge(scenes);
@@ -268,7 +439,8 @@ public sealed class SceneMergeTests
         int[]? clamped = null,
         string[]? nodeNames = null,
         int? animatedNode = null,
-        float[]? times = null)
+        float[]? times = null,
+        double depth = 0)
     {
         GeometryModel model = new(mode,
         [
@@ -277,7 +449,7 @@ public sealed class SceneMergeTests
                 $"mode3-record-{i}",
                 $"label:p{i}",
                 $"p{i}",
-                [new Vector3D(0, 0, 0), new Vector3D(1, 0, 0), new Vector3D(0, 1, 0)],
+                [new Vector3D(0, 0, depth), new Vector3D(1, 0, depth), new Vector3D(0, 1, depth + 0.01)],
                 [0, 1, 2],
                 [],
                 [new Vector3D(0, 0, 1), new Vector3D(0, 0, 1), new Vector3D(0, 0, 1)])),

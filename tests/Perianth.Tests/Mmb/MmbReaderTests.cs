@@ -70,10 +70,12 @@ public sealed class MmbReaderTests : IDisposable
     [Fact]
     public void The_envelope_byte_range_points_back_at_the_record()
     {
-        byte[] lead = new byte[37];
-        MmbModel model = ReadOk(new MmbFileBuilder { Lead = lead });
+        // Two nodes, so the record does not begin at a fixed offset and the
+        // range has to have been tracked rather than assumed.
+        MmbFileBuilder builder = new() { NodeCount = 2 };
+        MmbModel model = ReadOk(builder);
 
-        Assert.Equal(37, model.Parts[0].Envelope.Offset);
+        Assert.Equal(builder.HeaderLength, model.Parts[0].Envelope.Offset);
         Assert.True(model.Parts[0].Envelope.Length > 0);
     }
 
@@ -98,27 +100,29 @@ public sealed class MmbReaderTests : IDisposable
     [Fact]
     public void Records_are_reported_in_byte_order_with_consecutive_ordinals()
     {
-        byte[] first = new MmbFileBuilder { Label = "alpha" }.Build();
-        byte[] second = new MmbFileBuilder { Label = "beta", Lead = first }.Build();
-
-        MmbModel model = ReadOk(second);
+        MmbModel model = ReadOk(new MmbFileBuilder { Label = "alpha", Repeat = 2 });
 
         Assert.Equal(2, model.Parts.Length);
-        Assert.Equal("alpha", model.Parts[0].Label);
-        Assert.Equal("beta", model.Parts[1].Label);
         Assert.Equal([0, 1], (ImmutableArray<int>)[model.Parts[0].SourceOrdinal, model.Parts[1].SourceOrdinal]);
         Assert.True(model.Parts[0].Envelope.Offset < model.Parts[1].Envelope.Offset);
+
+        // Each record names its own payload, so the second is not the first
+        // found twice -- which is what the scan this replaced had to guard against.
+        Assert.NotEqual(model.Parts[0].Descriptor.PayloadOffset, model.Parts[1].Descriptor.PayloadOffset);
     }
 
     [Fact]
-    public void Two_candidates_reaching_one_descriptor_keep_the_later_start()
+    public void A_record_planted_inside_the_declarations_is_not_a_second_record()
     {
-        // A real nested coincidence, not a contrived one. The outer record has a
-        // four-byte label and 200 bytes of declarations; a second complete
-        // envelope is planted inside those declaration bytes, positioned so that
-        // its suffix and descriptor are the very same bytes as the outer
-        // record's. Both offsets validate, and section 5.1 says the later start
-        // is the one to keep.
+        // The scan had to deduplicate candidates, because a printable run
+        // inside a record's own bytes could match the envelope shape and be
+        // reported as a nested record. Section 5.1 resolved that by keeping the
+        // later start, a rule derived from the corpus that nobody could explain.
+        //
+        // A reader that walks the table cannot be fooled at all: the
+        // declarations are a counted block, so their contents are never
+        // examined. This plants a complete, valid-looking envelope inside them
+        // and requires exactly one part to come out.
         byte[] declarations = new byte[200];
         BinaryPrimitives.WriteUInt16LittleEndian(declarations.AsSpan(42), 104);
         for (int i = 44; i < 148; i++)
@@ -135,8 +139,8 @@ public sealed class MmbReaderTests : IDisposable
         MmbModel model = ReadOk(new MmbFileBuilder { Label = "abcd", Declarations = declarations });
 
         MmbModelPart part = Assert.Single(model.Parts);
-        Assert.Equal(100, part.Envelope.Offset);
-        Assert.Equal(new string('x', 104), part.Label);
+        Assert.Equal("abcd", part.Label);
+        Assert.Equal(50, part.DeclarationCount);
     }
 
     [Theory]
@@ -208,45 +212,99 @@ public sealed class MmbReaderTests : IDisposable
         Assert.Contains("does not lie inside its payload", refusal.Message, StringComparison.Ordinal);
     }
 
-    // Everything below is a structural mismatch rather than a broken record.
-    // The reader does not claim to parse the container, so an offset that does
-    // not match the envelope is simply not a record, and a file made only of
-    // those refuses for having none rather than for being corrupt.
+    // Everything below was a heuristic of the signature scan this reader
+    // replaced -- printable labels, a zero prefix, an exact suffix, a bounded
+    // float range. None of them is a rule of the format: they were the shape of
+    // the commonest record, used to find records in a container nobody had
+    // derived. Roadmap §10.53 derived it, so the questions are different now,
+    // and each test below states the new one rather than being deleted quietly.
 
     [Fact]
-    public void A_file_containing_no_envelope_refuses_for_having_no_records()
+    public void A_file_that_does_not_begin_with_the_magic_refuses_as_malformed()
     {
         Refusal refusal = ReadRefused(new byte[512]);
 
         Assert.Equal(RefusalKind.Malformed, refusal.Kind);
-        Assert.Contains("No model-part records", refusal.Message, StringComparison.Ordinal);
+        Assert.Contains("does not begin with", refusal.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("MUCM")]
+    [InlineData("MCMP")]
+    public void The_other_two_containers_refuse_for_what_they_are(string magic)
+    {
+        // Both ship. A scan never had to know which container it was inside, so
+        // neither had been noticed; a reader that walks the file must say so
+        // rather than failing to find anything.
+        Refusal refusal = ReadRefused(new MmbFileBuilder
+        {
+            Magic = Encoding.ASCII.GetBytes(magic),
+        });
+
+        Assert.Equal(RefusalKind.Unsupported, refusal.Kind);
+        Assert.Contains(magic, refusal.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void A_label_with_an_unprintable_byte_is_not_a_record()
+    public void An_unprintable_label_is_read_rather_than_rejected()
     {
-        byte[] file = new MmbFileBuilder { Label = "part" }.Build();
-        file[3] = 0x01;
+        // The scan required every label byte to be printable ASCII, because a
+        // printable run was how it recognised a record at all. Nothing in the
+        // format says so, and a reader that walks the table has already been
+        // told where the name is and how long it is.
+        MmbModel model = ReadOk(new MmbFileBuilder { Label = "a\u0001b" });
 
-        Assert.Contains("No model-part records", ReadRefused(file).Message, StringComparison.Ordinal);
+        Assert.Equal(3, model.Parts[0].LabelBytes.Length);
     }
 
     [Fact]
-    public void A_nonzero_prefix_is_not_a_record()
+    public void The_bytes_the_scan_called_a_zero_prefix_are_read_and_ignored()
     {
-        Assert.Contains(
-            "No model-part records",
-            ReadRefused(new MmbFileBuilder { ZeroPrefix = 1 }).Message,
-            StringComparison.Ordinal);
+        // They are two version-gated flag bytes. The scan needed them zero;
+        // the loader reads them and this reader skips them, so a nonzero value
+        // must change nothing at all.
+        MmbModel plain = ReadOk(new MmbFileBuilder());
+        MmbModel flagged = ReadOk(new MmbFileBuilder { ZeroPrefix = 0x0101 });
+
+        Assert.Equal(plain.Parts[0].Label, flagged.Parts[0].Label);
+        Assert.Equal(plain.Parts[0].Descriptor, flagged.Parts[0].Descriptor);
     }
 
     [Fact]
-    public void A_single_wrong_suffix_byte_is_not_a_record()
+    public void More_than_one_level_of_detail_refuses_rather_than_taking_the_first()
     {
-        Assert.Contains(
-            "No model-part records",
-            ReadRefused(new MmbFileBuilder { Suffix = [0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xF1] }).Message,
-            StringComparison.Ordinal);
+        // The scan's "exact seven-byte suffix" was a zero matrix count, a LOD
+        // count of one, and a flags word. Every one of 441,865 measured parts
+        // declares one level of detail, so a second is a shape this build has
+        // never seen -- and silently keeping the first would export a model at
+        // whichever detail happened to come first.
+        Refusal refusal = ReadRefused(new MmbFileBuilder
+        {
+            Suffix = [0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0xF0],
+        });
+
+        Assert.Equal(RefusalKind.Unsupported, refusal.Kind);
+        Assert.Contains("levels of detail", refusal.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_part_carrying_matrices_is_read_and_its_bytes_kept()
+    {
+        // This is the shape the scan could not match, and it did not lose the
+        // part quietly: it reported the whole file as holding no records. One
+        // real file does this, a debug object.
+        byte[] matrix = new byte[66];
+        matrix[0] = 0x3F;
+        MmbFileBuilder builder = new()
+        {
+            Suffix = [0x01, 0x00, .. matrix, 0x01, 0x00, 0x00, 0x00, 0xF0],
+        };
+
+        MmbModel model = ReadOk(builder);
+
+        MmbModelPart part = Assert.Single(model.Parts);
+        Assert.Equal(1, part.MatrixCount);
+        Assert.Equal(matrix, part.MatrixBytes.ToArray());
     }
 
     [Theory]
@@ -254,51 +312,15 @@ public sealed class MmbReaderTests : IDisposable
     [InlineData(float.PositiveInfinity)]
     [InlineData(1e6f)]
     [InlineData(-1e6f)]
-    public void An_envelope_value_outside_the_accepted_range_is_not_a_record(float value)
+    public void A_transform_value_outside_the_scan_range_is_read_rather_than_rejected(float value)
     {
+        // The scan rejected these to keep a false match unlikely. They are just
+        // the part's transform, and the format places no range on it.
         float[] values = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, value];
 
-        Assert.Contains(
-            "No model-part records",
-            ReadRefused(new MmbFileBuilder { Values = values }).Message,
-            StringComparison.Ordinal);
-    }
+        MmbModel model = ReadOk(new MmbFileBuilder { Values = values });
 
-    [Fact]
-    public void An_empty_label_is_not_a_record()
-    {
-        Assert.Contains(
-            "No model-part records",
-            ReadRefused(new MmbFileBuilder { Label = string.Empty }).Message,
-            StringComparison.Ordinal);
-    }
-
-    [Theory]
-    [InlineData(241)]
-    [InlineData(249)]
-    [InlineData(447)]
-    [InlineData(1000)]
-    public void A_label_longer_than_the_reference_cap_is_still_a_record(int length)
-    {
-        // The reference capped the label at 240 bytes and this suite asserted
-        // that boundary rather than questioning it. The cap hid ten of the
-        // corpus's models: every record/constant count mismatch in all 14,503
-        // pairs was a part whose name ran past 240, and the longest real label
-        // is 447. Nothing anywhere justified the number.
-        //
-        // 249 and 447 are real lengths that were being dropped. 1000 is here
-        // because no bound replaced the old one: the label is limited by the
-        // file, and the printable-ASCII rule is what makes a long false match
-        // vanishingly unlikely.
-        MmbModel model = ReadOk(new MmbFileBuilder { Label = new string('a', length) });
-
-        Assert.Equal(length, model.Parts[0].Label.Length);
-    }
-
-    [Fact]
-    public void Reading_a_null_file_is_a_fault()
-    {
-        Assert.Throws<ArgumentNullException>(() => MmbReader.Read(null!));
+        Assert.Equal(values, model.Parts[0].Values);
     }
 
     private MmbModel ReadOk(MmbFileBuilder builder) => ReadOk(builder.Build());

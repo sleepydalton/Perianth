@@ -104,13 +104,18 @@ public sealed class EditordataWriterTests
         // a float. Writing through an arithmetic path would quiet a signalling
         // NaN and change the bits of a field nothing reads as a number, so the
         // writer reinterprets rather than converts — this is that guard.
-        float pattern = BitConverter.Int32BitsToSingle(unchecked((int)0xFFFFFFFF));
+        //
+        // The pattern goes in W alone. Its RGB is the ambient term of the
+        // brightness scale and is read as a number, so the reader requires it to
+        // be finite; putting a NaN there would be testing the writer against a
+        // file the reader now refuses, which is a fixture claiming more than the
+        // field it names.
         float payload = BitConverter.Int32BitsToSingle(unchecked((int)0x7FA00001));
 
         byte[] original = new EditordataBuilder()
             .SectionWithCustom(
                 [MaterialSpec.Standard()],
-                new CustomSpec { Slot50 = (pattern, payload, 0f, pattern) })
+                new CustomSpec { Slot50 = (0.25f, 0f, 0f, payload) })
             .Build();
 
         RoundTrips(original);

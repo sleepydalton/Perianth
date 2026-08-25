@@ -92,6 +92,76 @@ public sealed class MaterialAssemblerTests : IDisposable
     }
 
     [Fact]
+    public void The_brightness_scale_dims_the_base_colour_factor()
+    {
+        // The camel shader ends `myConstAmbientColor.rgb * colour + colour *
+        // myConstAlbedoColor.w`, so a material is drawn at slot_50.rgb +
+        // slot_10.w of its own colour. slot_10.w is 0.800 at all three quartiles
+        // of 1,441,276 character sections and the ambient term is zero on 99.9%
+        // of them, so this is a 25% correction on very nearly everything.
+        WriteTexture("tex/a.dds");
+
+        MaterialSet set = Assemble(
+            parts: 1,
+            new EditordataBuilder().SectionWithCustom(
+                [MaterialSpec.Standard(diffuse: "tex/a.dds")],
+                new CustomSpec
+                {
+                    Slot10 = (1f, 1f, 1f, 0.8f),
+                    Slot20 = (0f, 0f, 0f, 1f),
+                    Slot50 = (0f, 0f, 0f, 0f),
+                }));
+
+        ColorRgba factor = set.Materials[0].BaseColorFactor;
+        Assert.Equal(0.8, factor.R, 6);
+        Assert.Equal(0.8, factor.G, 6);
+        Assert.Equal(0.8, factor.B, 6);
+    }
+
+    [Fact]
+    public void The_ambient_term_adds_to_the_brightness_scale_per_channel()
+    {
+        // It is per channel because the ambient term is, which no all-grey
+        // fixture can show. Dormant on the corpus — three drawn sections on one
+        // character in 597 — and reproduced anyway, because the arithmetic is
+        // the same either way and a channel-blind version would be wrong where
+        // it does fire.
+        WriteTexture("tex/a.dds");
+
+        MaterialSet set = Assemble(
+            parts: 1,
+            new EditordataBuilder().SectionWithCustom(
+                [MaterialSpec.Standard(diffuse: "tex/a.dds")],
+                new CustomSpec
+                {
+                    Slot10 = (1f, 1f, 1f, 0.5f),
+                    Slot20 = (0f, 0f, 0f, 1f),
+                    Slot50 = (0.25f, 0f, 0.5f, 0f),
+                }));
+
+        ColorRgba factor = set.Materials[0].BaseColorFactor;
+        Assert.Equal(0.75, factor.R, 6);
+        Assert.Equal(0.50, factor.G, 6);
+        Assert.Equal(1.00, factor.B, 6);
+    }
+
+    [Fact]
+    public void A_section_with_no_custom_record_is_not_dimmed()
+    {
+        // The shader's declared defaults are myConstAlbedoColor = 1 1 1 1 and
+        // myConstAmbientColor = 0 0 0 0, so an absent record scales by one. This
+        // is the guard that stops the correction being applied twice, or to
+        // sections that never asked for it.
+        WriteTexture("tex/a.dds");
+
+        MaterialSet set = Assemble(
+            parts: 1,
+            new EditordataBuilder().Section(MaterialSpec.Standard(diffuse: "tex/a.dds")));
+
+        Assert.Equal(ColorRgba.White, set.Materials[0].BaseColorFactor);
+    }
+
+    [Fact]
     public void The_uv_repeat_becomes_the_material_scale()
     {
         WriteTexture("tex/a.dds");
