@@ -24,11 +24,38 @@ internal sealed class CameldataBuilder
 
     public uint[] BezierWords { get; set; } = [];
 
+    /// <summary>Whether the sixteen bytes at +48 are filler rather than coverage ranges.</summary>
+    /// <remarks>
+    /// For the reader's own test, which asserts those bytes survive uninterpreted.
+    /// Everything else wants ranges that describe the fixture, because a resize
+    /// re-cuts them and checks them first.
+    /// </remarks>
+    public bool ArbitraryDataIndices { get; set; }
+
+    /// <summary>Each record's draw vertex count, when it is not its pool slice.</summary>
+    public int[]? VertexCounts { get; set; }
+
     /// <summary>The very first float of the first constant, so it can be made non-finite.</summary>
     public float FirstFloat { get; set; } = 1f;
 
     /// <summary>Packed flags written into every mode-3 constant.</summary>
     public uint PackedFlags { get; set; }
+
+    /// <summary>Per-constant packed flags, where they must differ from each other.</summary>
+    public uint[]? PerConstantPackedFlags { get; set; }
+
+    /// <summary>
+    /// Each constant's base into the XY and Z pools, when more than one constant
+    /// must own a slice of its own. Null writes zero, which is right for a file
+    /// with one constant and wrong for any other.
+    /// </summary>
+    public uint[]? XyBases { get; set; }
+
+    /// <inheritdoc cref="XyBases"/>
+    public uint[]? ZBases { get; set; }
+
+    /// <summary>Per-constant UV0 bases, for the unified-UV0 population.</summary>
+    public uint[]? Uv0Bases { get; set; }
 
     public Vector3[] Positions { get; set; } = [new(1, 2, 3)];
 
@@ -55,8 +82,12 @@ internal sealed class CameldataBuilder
         uint header = HeaderWord ?? (uint)(Mode | (Flags << 15));
         AddUInt32(file, header);
         AddUInt32(file, DeclaredConstantCount ?? (uint)ConstantCount);
-        AddUInt32(file, (uint)BezierWords.Length);
-        foreach (uint word in BezierWords)
+        uint[] bezier = BezierWords.Length == 0 && !ArbitraryDataIndices && Mode == 3
+            ? new uint[CoverageWordTotal()]
+            : BezierWords;
+
+        AddUInt32(file, (uint)bezier.Length);
+        foreach (uint word in bezier)
         {
             AddUInt32(file, word);
         }
@@ -129,10 +160,10 @@ internal sealed class CameldataBuilder
     private void AddMode3Constant(List<byte> file, int ordinal)
     {
         AddSurface(file, ordinal);
-        AddUInt32(file, 0);
-        AddUInt32(file, 0);
-        AddUInt32(file, 0);
-        AddUInt32(file, PackedFlags);
+        AddUInt32(file, XyBases is null ? 0 : XyBases[ordinal]);
+        AddUInt32(file, ZBases is null ? 0 : ZBases[ordinal]);
+        AddUInt32(file, Uv0Bases is null ? 0 : Uv0Bases[ordinal]);
+        AddUInt32(file, PerConstantPackedFlags is null ? PackedFlags : PerConstantPackedFlags[ordinal]);
         AddMatrix(file);
         AddSingle(file, 2f);
         AddSingle(file, 0.5f);
@@ -141,17 +172,77 @@ internal sealed class CameldataBuilder
 
     private void AddSurface(List<byte> file, int ordinal)
     {
-        // Surface origin, U and V, then the sixteen uninterpreted bytes at +48.
+        // Surface origin, U and V, then the sixteen bytes at +48.
         AddSingle(file, ordinal == 0 ? FirstFloat : 1f);
         for (int i = 1; i < 12; i++)
         {
             AddSingle(file, i);
         }
 
-        for (int i = 0; i < 16; i++)
+        if (ArbitraryDataIndices)
         {
-            file.Add((byte)(0xA0 + i));
+            for (int i = 0; i < 16; i++)
+            {
+                file.Add((byte)(0xA0 + i));
+            }
+
+            return;
         }
+
+        // Curved-coverage ranges that tile, as every shipped record's do. A
+        // fixture carrying arbitrary bytes here is not a cameldata a resize can
+        // be tried against, and 27 tests said so the moment the re-cut started
+        // checking: the layout is load-bearing, not decoration.
+        int signWords = SignWordsFor(VertexCountOf(ordinal));
+        int bitsWords = BitsWordsFor(VertexCountOf(ordinal));
+        int signBase = 0;
+        for (int before = 0; before < ordinal; before++)
+        {
+            signBase += SignWordsFor(VertexCountOf(before)) + BitsWordsFor(VertexCountOf(before));
+        }
+
+        AddUInt32(file, (uint)signBase);
+        AddUInt32(file, (uint)signWords);
+        AddUInt32(file, (uint)(signBase + signWords));
+        AddUInt32(file, (uint)bitsWords);
+    }
+
+    /// <summary>How many vertices a record declares, for its coverage ranges.</summary>
+    /// <remarks>
+    /// Defaults to the record's slice of the XY pool, which is its vertex count
+    /// on every fixture here because none repeats a position. A fixture that
+    /// does must say so, since the two numbers part company exactly there.
+    /// </remarks>
+    private int VertexCountOf(int ordinal)
+    {
+        if (VertexCounts is not null)
+        {
+            return VertexCounts[ordinal];
+        }
+
+        if (XyBases is null)
+        {
+            return Xy?.Length ?? 0;
+        }
+
+        int start = (int)XyBases[ordinal];
+        int end = ordinal + 1 < XyBases.Length ? (int)XyBases[ordinal + 1] : Xy?.Length ?? 0;
+        return Math.Max(end - start, 0);
+    }
+
+    private static int SignWordsFor(int vertices) => (vertices + 31) / 32;
+
+    private static int BitsWordsFor(int vertices) => (vertices + 15) / 16;
+
+    private int CoverageWordTotal()
+    {
+        int total = 0;
+        for (int ordinal = 0; ordinal < ConstantCount; ordinal++)
+        {
+            total += SignWordsFor(VertexCountOf(ordinal)) + BitsWordsFor(VertexCountOf(ordinal));
+        }
+
+        return total;
     }
 
     private static void AddMatrix(List<byte> file)

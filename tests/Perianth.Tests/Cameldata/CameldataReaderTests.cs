@@ -70,7 +70,8 @@ public sealed class CameldataReaderTests : IDisposable
     [Fact]
     public void The_sixteen_uninterpreted_bytes_of_a_constant_are_kept()
     {
-        Mode2Cameldata file = Assert.IsType<Mode2Cameldata>(ReadOk(new CameldataBuilder { Mode = 2 }));
+        Mode2Cameldata file = Assert.IsType<Mode2Cameldata>(
+            ReadOk(new CameldataBuilder { Mode = 2, ArbitraryDataIndices = true }));
 
         Assert.Equal(16, file.Constants[0].DataIndices.Length);
         Assert.Equal(0xA0, file.Constants[0].DataIndices.Span[0]);

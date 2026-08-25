@@ -294,6 +294,94 @@ public sealed class CostumeCatalogueTests : IDisposable
     }
 
     [Fact]
+    public void A_headpiece_hiding_the_hair_category_still_leaves_the_cuts_it_allows()
+    {
+        // The bug this pins made every hat remove every hairstyle, and it was
+        // reported as "the hat hides any hair" by several people at once.
+        //
+        // The schema gives every headpiece `myHideSlot1 StreetHair` -- the
+        // parent category. Read as "this whole slot is covered" it removes the
+        // entry outright, which is a nonsense: the six cuts beneath it are named
+        // separately, and a headpiece that hides four of them is saying the
+        // other two may be worn. Only running out of cuts means no hair.
+        Write("kit",
+            Hairstyle("style", "Long Bob"),
+            Record(
+                "CostumeItemHead", "helmet", model: "assets/helmet.mmb",
+                hides: ["StreetHair", "StreetHairFull", "StreetHairHigh", "StreetHairBangs"]));
+
+        Assert.Equal(
+            ["assets/helmet.mmb", "assets/style_skull.mmb"],
+            CostumeCatalogue.Wear(Read()).Select(d => d.ModelPath).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void A_headpiece_hiding_every_cut_really_does_leave_no_hair()
+    {
+        // The other side of it, and the reason the check above cannot simply be
+        // deleted without this beside it: four headpieces cover the head
+        // completely, and drawing hair anyway is drawing it through a helmet.
+        Write("kit",
+            Hairstyle("style", "Long Bob"),
+            Record(
+                "CostumeItemHead", "helmet", model: "assets/helmet.mmb",
+                hides:
+                [
+                    "StreetHair", "StreetHairBangs", "StreetHairFull",
+                    "StreetHairHigh", "StreetHairSkull",
+                ]));
+
+        Assert.Equal(["assets/helmet.mmb"], CostumeCatalogue.Wear(Read()).Select(d => d.ModelPath));
+    }
+
+    [Fact]
+    public void What_was_left_out_is_said_rather_than_left_to_be_noticed()
+    {
+        // Every one of these decisions is invisible in the output: a hairstyle
+        // that produced no model and one nobody chose look identical in a GLB.
+        Write("kit",
+            Hairstyle("style", "Long Bob"),
+            Record(
+                "CostumeItemHead", "helmet", model: "assets/helmet.mmb",
+                hides: ["StreetHair", "StreetHairFull", "StreetHairHigh", "StreetHairBangs"]));
+
+        ImmutableArray<CostumeItem> items = Read();
+        CostumeCatalogue.CostumeOutcome hair = CostumeCatalogue.Explain(
+                items.Select(item => new CostumeCatalogue.CostumeWorn(item)))
+            .Single(outcome => outcome.Item.Slot == "Hair");
+
+        Assert.Equal("assets/style_skull.mmb", hair.Piece!.ModelPath);
+        Assert.Equal(
+            ["StreetHair", "StreetHairBangs", "StreetHairFull", "StreetHairHigh"],
+            hair.Blocked);
+    }
+
+    [Fact]
+    public void The_account_and_what_is_drawn_cannot_disagree()
+    {
+        // Wear is a view over Explain rather than a second implementation, so
+        // an explanation that described something the tool no longer does is
+        // not a state this can reach. Asserted, because the two being one is
+        // the whole reason to trust the account.
+        Write("kit",
+            Hairstyle("style", "Long Bob"),
+            Record("CostumeItemStreetEyewear", "specs", model: "assets/specs.mmb"),
+            Record(
+                "CostumeItemHead", "helmet", model: "assets/helmet.mmb",
+                hides: ["StreetHair", "StreetHairFull", "StreetEyewear"]));
+
+        ImmutableArray<CostumeItem> items = Read();
+        IEnumerable<CostumeCatalogue.CostumeWorn> worn =
+            items.Select(item => new CostumeCatalogue.CostumeWorn(item));
+
+        Assert.Equal(
+            CostumeCatalogue.Wear(worn).Select(d => d.ModelPath),
+            CostumeCatalogue.Explain(worn)
+                .Where(outcome => outcome.Piece is not null)
+                .Select(outcome => outcome.Piece!.ModelPath));
+    }
+
+    [Fact]
     public void A_piece_never_hides_itself()
     {
         // Costs nothing to guarantee, and would otherwise be an entry that
@@ -390,6 +478,79 @@ public sealed class CostumeCatalogueTests : IDisposable
 
     // --- fixtures ------------------------------------------------------------
 
+    [Fact]
+    public void Two_outfits_worn_at_once_refuse_rather_than_drawing_both()
+    {
+        // Each outfit has its own body, and each replaces the character's parts
+        // where it draws, so wearing two puts one suit inside the other. The
+        // reports were "an extra floating pair of hands" and "the outfit is not
+        // visible from the reverse", which are one fault seen twice.
+        Write("kit",
+            Record("CostumeItemStreetBody", "street", name: "Street Clothes", model: "assets/street.mmb"),
+            Record("CostumeItemBody", "cape", name: "Cape", model: "assets/cape.mmb"));
+        WriteOutfitSchema();
+
+        Result<string> outfit = CostumeCatalogue.Outfit(Read());
+
+        Assert.True(outfit.IsRefused);
+        Assert.Contains("Street", outfit.Refusal.Message, StringComparison.Ordinal);
+        Assert.Contains("Hero", outfit.Refusal.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void One_outfit_and_the_pieces_worn_with_every_outfit_agree()
+    {
+        // Hair, eyewear and makeup are `All` and go with whichever outfit is
+        // on. The failure this guards against is the opposite of the one above:
+        // a rule that refused any two pieces would make the pane unusable.
+        Write("kit",
+            Record("CostumeItemBody", "cape", name: "Cape", model: "assets/cape.mmb"),
+            Record("CostumeItemHands", "gloves", name: "Gloves", model: "assets/gloves.mmb"),
+            Record("CostumeItemStreetEyewear", "specs", name: "Specs", model: "assets/specs.mmb"));
+        WriteOutfitSchema();
+
+        Assert.Equal("Hero", CostumeCatalogue.Outfit(Read()).Value);
+    }
+
+    [Fact]
+    public void A_record_naming_its_own_outfit_overrides_the_class_default()
+    {
+        // 23 real records do this, and every one moves a shared piece into the
+        // hero outfit: a costume's own eyewear is not a choice of its own. Read
+        // from the class alone, such a piece is `All` and never disagrees with
+        // anything, so this is what the override is for.
+        Write("kit",
+            Record("CostumeItemStreetEyewear", "visor", name: "Visor", model: "assets/visor.mmb", outfit: "Hero"),
+            Record("CostumeItemStreetBody", "street", name: "Street Clothes", model: "assets/street.mmb"));
+        WriteOutfitSchema();
+
+        Assert.True(CostumeCatalogue.Outfit(Read()).IsRefused);
+    }
+
+    [Fact]
+    public void No_schema_at_all_leaves_every_piece_worn_with_every_outfit()
+    {
+        // A mod folder need not carry one. Without it nothing is exclusive, so
+        // nothing disagrees -- which is how this read before the field was
+        // known about, rather than a refusal on a folder that says nothing.
+        Write("kit",
+            Record("CostumeItemStreetBody", "street", name: "Street Clothes", model: "assets/street.mmb"),
+            Record("CostumeItemBody", "cape", name: "Cape", model: "assets/cape.mmb"));
+
+        Assert.Equal(CostumeCatalogue.EveryOutfit, CostumeCatalogue.Outfit(Read()).Value);
+    }
+
+    /// <summary>
+    /// The outfit half of the schema, shaped as the game writes it: declared on
+    /// the base and refined by the classes that belong to one outfit.
+    /// </summary>
+    private void WriteOutfitSchema() => WriteSchema(
+        "class CostumeItemBase\n{\n\tCostumeType myCostumeType Hero\n}\n" +
+        "class CostumeItemBody : CostumeItemBase\n{\n\tCostumeType myCostumeType Hero\n}\n" +
+        "class CostumeItemHands : CostumeItemBase\n{\n\tCostumeType myCostumeType Hero\n}\n" +
+        "class CostumeItemStreetBody : CostumeItemBase\n{\n\tCostumeType myCostumeType Street\n}\n" +
+        "class CostumeItemStreetEyewear : CostumeItemBase\n{\n\tCostumeType myCostumeType All\n}\n");
+
     /// <summary>A parent and the variants it owns, as the hair records are shaped.</summary>
     private static string Hairstyle(string id, string name) => string.Concat(
         Record("CostumeItemStreetHair", id, name: name, owns:
@@ -411,9 +572,16 @@ public sealed class CostumeCatalogueTests : IDisposable
         string? model = null,
         string[]? hides = null,
         (int Slot, string Kind)[]? slots = null,
-        (string Type, string Id)[]? owns = null)
+        (string Type, string Id)[]? owns = null,
+        string? outfit = null)
     {
         List<string> lines = [$"{type} {id} < uid={id.GetHashCode(StringComparison.Ordinal):X32} >", "{"];
+
+        if (outfit is not null)
+        {
+            lines.Add($"\tmyCostumeType {outfit}");
+        }
+
 
         if (name is not null)
         {

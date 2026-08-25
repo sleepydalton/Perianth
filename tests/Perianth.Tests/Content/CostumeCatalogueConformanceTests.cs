@@ -236,6 +236,57 @@ public sealed class CostumeCatalogueConformanceTests
     }
 
     /// <summary>The catalogue, or a default array when the archives are not here.</summary>
+    [Fact]
+    public void The_archives_hold_three_outfits_that_are_never_worn_together()
+    {
+        ImmutableArray<CostumeItem> items = Catalogue();
+        if (items.IsDefault)
+        {
+            return;
+        }
+
+        string[] outfits = [.. items.Select(item => item.Outfit).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)];
+        Assert.Equal(["All", "Backstory", "Hero", "Street"], outfits);
+
+        // Nine entries belong to an outfit other than Hero: two street bodies,
+        // two street hands, and one backstory head, body and pair of hands. Each
+        // draws a whole garment, so any two of the three outfits worn at once is
+        // one suit inside another.
+        Assert.Equal(2, items.Count(item => string.Equals(item.Outfit, "Street", StringComparison.Ordinal) && item.Slot == "StreetBody"));
+        Assert.Equal(3, items.Count(item => string.Equals(item.Outfit, "Backstory", StringComparison.Ordinal)));
+
+        // The shared pieces are the bulk of the list and go with whatever is
+        // worn -- hair, facial hair, most eyewear, most makeup. A rule that made
+        // these exclusive would refuse an ordinary outfit.
+        Assert.InRange(items.Count(item => !item.IsExclusive), 100, 200);
+
+        // And the guard itself, on the real names the reports used.
+        CostumeItem street = items.First(item => item.Slot == "StreetHands");
+        CostumeItem hero = items.First(item => item.Slot == "Hands");
+        CostumeItem hair = items.First(item => item.Slot == "Hair");
+
+        Assert.True(CostumeCatalogue.Outfit([street, hair]).IsSuccess);
+        Assert.True(CostumeCatalogue.Outfit([hero, hair]).IsSuccess);
+        Assert.True(CostumeCatalogue.Outfit([street, hero]).IsRefused);
+    }
+
+    [Fact]
+    public void Some_records_name_an_outfit_their_class_does_not()
+    {
+        ImmutableArray<CostumeItem> items = Catalogue();
+        if (items.IsDefault)
+        {
+            return;
+        }
+
+        // 23 of them, all moving a shared piece into the hero outfit: nine
+        // eyewear and fourteen accent makeup, which belong to a costume rather
+        // than being choices of their own. Read from the class alone every one
+        // of these is worn with everything, so this is the override doing work.
+        Assert.NotEmpty(items.Where(item =>
+            item.Slot is "Eyewear" or "Accent Makeup" && item.IsExclusive));
+    }
+
     private static ImmutableArray<CostumeItem> Catalogue()
     {
         string root = Environment.GetEnvironmentVariable(RootVariable) ?? string.Empty;

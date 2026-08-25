@@ -162,13 +162,25 @@ public sealed class BvmReaderTests
     /// Deliberately not the reader's own code inverted: a fixture built by the
     /// implementation under test agrees with it however wrong both are. This is
     /// written from the format's description — six bits, then a width chosen by
-    /// the top two bits.
+    /// the top two bits, with the widest selector replacing the value rather
+    /// than extending it (Roadmap §10.86).
     /// </remarks>
     private static IEnumerable<byte> Compact(int value)
     {
         ulong high = (ulong)value >> 6;
-        int extra = high == 0 ? 0 : high <= byte.MaxValue ? 1 : high <= 0xFFFFFF ? 3 : 7;
-        byte selector = (byte)(extra switch { 0 => 0, 1 => 1, 3 => 2, _ => 3 } << 6);
+        if (high > 0xFFFFFF)
+        {
+            yield return 0xC0;
+            for (int i = 0; i < sizeof(uint); i++)
+            {
+                yield return (byte)((uint)value >> (8 * i));
+            }
+
+            yield break;
+        }
+
+        int extra = high == 0 ? 0 : high <= byte.MaxValue ? 1 : 3;
+        byte selector = (byte)(extra switch { 0 => 0, 1 => 1, _ => 2 } << 6);
 
         yield return (byte)(selector | (value & 0x3F));
         for (int i = 0; i < extra; i++)
